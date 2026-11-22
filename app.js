@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.5.1';
+const VERSAO_APP = '1.6.0';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -1174,6 +1174,7 @@ function vazio(c, v) {
   if (Array.isArray(v)) return v.length === 0;
   if (c.tipo === 'cronometro') return !(v.voltas && v.voltas.length);
   if (c.tipo === 'gps') return !v.lat;
+  if (c.tipo === 'goniometro') return !v.anexo;
   if (c.tipo === 'resultado') return false;
   return false;
 }
@@ -1384,6 +1385,7 @@ function chips(opcoes, valor, multi, aoMudar) {
     marcar(); aoMudar(valor);
   } })));
   marcar();
+  box.definir = v => { valor = v; marcar(); };
   return box;
 }
 
@@ -1474,7 +1476,7 @@ const CONTROLES = {
     return h('div', null, h('div', { class: 'linha-inp' }, inp, btHoje), msg);
   },
   hora(c, esc) { return h('input', { class: 'inp', type: 'time', value: esc[c.id] || '', onchange: e => { esc[c.id] = e.target.value; alterou(); } }); },
-  selecao(c, esc) { return chips(c.opcoes || [], esc[c.id] || '', false, v => { esc[c.id] = v; alterou(); }); },
+  selecao(c, esc) { const b = chips(c.opcoes || [], esc[c.id] || '', false, v => { esc[c.id] = v; alterou(); }); b.dataset.campo = c.id; return b; },
   simnao(c, esc) { return chips(c.opcoes || ['Sim', 'Não'], esc[c.id] || '', false, v => { esc[c.id] = v; alterou(); }); },
   multipla(c, esc) { return chips(c.opcoes || [], esc[c.id] || [], true, v => { esc[c.id] = v; alterou(); }); },
 
@@ -2188,6 +2190,255 @@ async function importarArquivoFilial(tipo, arq) {
     rotear();
   } catch (e) { try { espera(); } catch (x) { } toast(e.message, 9000); }
 }
+
+/* ==================== TRANSFERIDOR NA FOTO (RULA) ==================== */
+const GONIO_PONTOS = [
+  { k: 'quadril', n: 'Quadril', d: 'lateral do quadril, na altura da cintura' },
+  { k: 'ombro', n: 'Ombro', d: 'ponta do ombro' },
+  { k: 'cotovelo', n: 'Cotovelo', d: 'ponta do cotovelo' },
+  { k: 'punho', n: 'Punho', d: 'centro do punho' },
+  { k: 'mao', n: 'Mão', d: 'nós dos dedos (meio da mão)' },
+  { k: 'orelha', n: 'Orelha', d: 'orelha (abertura do ouvido)' }
+];
+const GONIO_LINHAS = [['quadril', 'ombro'], ['ombro', 'cotovelo'], ['cotovelo', 'punho'], ['punho', 'mao'], ['ombro', 'orelha']];
+const GONIO_NOMES = { braco: 'Braço', antebraco: 'Antebraço', punho: 'Punho', pescoco: 'Pescoço', tronco: 'Tronco' };
+
+/** Ângulos (graus) a partir dos pontos. f = +1 se a pessoa está virada para a direita da foto, -1 para a esquerda. */
+function calcularAngulos(P, f) {
+  const vet = (a, b) => (P[a] && P[b]) ? { x: P[b].x - P[a].x, y: P[b].y - P[a].y } : null;
+  const grau = r => r * 180 / Math.PI;
+  const paraCima = w => grau(Math.atan2(w.x * f, -w.y));   // 0 = vertical para cima; + = para a frente
+  const paraBaixo = w => grau(Math.atan2(w.x * f, w.y));   // 0 = vertical para baixo; + = para a frente
+  const entre = (a, b) => grau(Math.acos(Math.max(-1, Math.min(1, (a.x * b.x + a.y * b.y) / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y) || 1)))));
+  const norm = a => ((a + 540) % 360) - 180;
+  const T = vet('quadril', 'ombro'), U = vet('ombro', 'cotovelo'), F = vet('cotovelo', 'punho'), H = vet('punho', 'mao'), N = vet('ombro', 'orelha');
+  const r = {};
+  if (T) r.tronco = paraCima(T);                                                   // inclinação do tronco em relação à vertical
+  if (U) r.braco = norm(paraBaixo(U) - (T ? paraBaixo({ x: -T.x, y: -T.y }) : 0)); // braço em relação à linha do tronco
+  if (U && F) r.antebraco = entre(U, F);                                           // flexão do cotovelo
+  if (F && H) r.punho = entre(F, H);                                               // desvio da mão em relação ao antebraço
+  if (N) r.pescoco = norm(paraCima(N) - (T ? paraCima(T) : 0));                    // cabeça em relação ao tronco
+  return r;
+}
+/** Faixa do RULA para cada ângulo: devolve { campo: { n, texto } }. */
+function faixasRULA(a) {
+  const s = {};
+  if (a.braco !== undefined) { const b = a.braco; s.braco = b < -20 ? { n: 2, t: 'extensão' } : b <= 20 ? { n: 1, t: b < 0 ? 'extensão' : 'flexão' } : b <= 45 ? { n: 2, t: 'flexão' } : b <= 90 ? { n: 3, t: 'flexão' } : { n: 4, t: 'flexão' }; }
+  if (a.antebraco !== undefined) s.antebraco = { n: (a.antebraco >= 60 && a.antebraco <= 100) ? 1 : 2, t: 'flexão' };
+  if (a.punho !== undefined) s.punho = { n: a.punho < 5 ? 1 : a.punho <= 15 ? 2 : 3, t: a.punho < 5 ? 'neutro' : 'flexão/extensão' };
+  if (a.pescoco !== undefined) { const p = a.pescoco; s.pescoco = p < -5 ? { n: 4, t: 'extensão' } : p <= 10 ? { n: 1, t: 'flexão' } : p <= 20 ? { n: 2, t: 'flexão' } : { n: 3, t: 'flexão' }; }
+  if (a.tronco !== undefined) { const t = Math.abs(a.tronco); s.tronco = { n: t < 5 ? 1 : t <= 20 ? 2 : t <= 60 ? 3 : 4, t: a.tronco < -5 ? 'extensão' : 'flexão' }; }
+  return s;
+}
+function textoAngulos(g) {
+  const a = (g && g.angulos) || {};
+  return Object.keys(GONIO_NOMES).filter(k => a[k] !== undefined).map(k => GONIO_NOMES[k] + ' ' + Math.round(a[k]) + '°').join(' · ');
+}
+
+/** Carrega imagem (Blob) num canvas, no máximo 1600 px no lado maior. */
+async function canvasDeBlob(blob) {
+  let fonte;
+  try { fonte = await createImageBitmap(blob, { imageOrientation: 'from-image' }); }
+  catch (e) { fonte = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(blob); }); }
+  const w = fonte.width, hh = fonte.height, k = Math.min(1, 1600 / Math.max(w, hh));
+  const cv = document.createElement('canvas'); cv.width = Math.round(w * k); cv.height = Math.round(hh * k);
+  cv.getContext('2d').drawImage(fonte, 0, 0, cv.width, cv.height);
+  return cv;
+}
+/** Escolher um quadro do vídeo. Devolve canvas ou null. */
+function quadroDoVideo(blob) {
+  return new Promise(resolve => {
+    const u = URL.createObjectURL(blob);
+    const vid = h('video', { src: u, muted: true, playsinline: true, preload: 'auto', class: 'gonio-video' });
+    const barra = h('input', { type: 'range', min: 0, max: 1000, value: 0, class: 'gonio-barra' });
+    const tempo = h('span', { class: 'peq', text: '0,0 s' });
+    const ir = t => { vid.currentTime = Math.max(0, Math.min(vid.duration || 0, t)); };
+    vid.addEventListener('loadedmetadata', () => { ir(0.01); });
+    const mostrarTempo = () => { tempo.textContent = mostraNum(vid.currentTime.toFixed(1)) + ' s de ' + mostraNum((vid.duration || 0).toFixed(1)) + ' s'; if (vid.duration) barra.value = Math.round(vid.currentTime / vid.duration * 1000); };
+    vid.addEventListener('timeupdate', mostrarTempo); vid.addEventListener('seeked', mostrarTempo);
+    barra.addEventListener('input', () => { if (vid.duration) ir(barra.value / 1000 * vid.duration); });
+    const fechar = modal(h('div', { class: 'gonio-box' },
+      h('p', { class: 'assin-tit', text: 'Escolha o quadro do vídeo' }),
+      h('p', { class: 'peq', text: 'Arraste a barra até o momento da postura mais crítica. Use os botões para ajustar quadro a quadro.' }),
+      vid, barra, tempo,
+      h('div', { class: 'linha-bts' },
+        h('button', { class: 'bt sec', text: '◀ quadro', onclick: () => ir(vid.currentTime - 1 / 30) }),
+        h('button', { class: 'bt sec', text: 'quadro ▶', onclick: () => ir(vid.currentTime + 1 / 30) })),
+      h('div', { class: 'linha-bts' },
+        h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => { fechar(); URL.revokeObjectURL(u); resolve(null); } }),
+        h('button', { class: 'bt', text: 'Usar este quadro', onclick: () => {
+          const k = Math.min(1, 1600 / Math.max(vid.videoWidth, vid.videoHeight));
+          const cv = document.createElement('canvas'); cv.width = Math.round(vid.videoWidth * k); cv.height = Math.round(vid.videoHeight * k);
+          cv.getContext('2d').drawImage(vid, 0, 0, cv.width, cv.height);
+          fechar(); URL.revokeObjectURL(u); resolve(cv);
+        } }))), { cheio: true });
+  });
+}
+/** Origem da imagem: fotos/vídeos do próprio registro, câmera ou arquivo. Devolve canvas ou null. */
+async function escolherImagemGonio(reg) {
+  const locais = [];
+  for (const a of (reg.anexos || [])) {
+    if (!/^(image|video)\//.test(a.mime || '')) continue;
+    const b = await DB.get('blobs', a.id);
+    if (b) locais.push({ a, blob: b.blob });
+  }
+  return new Promise(resolve => {
+    let fechar;
+    const usar = async blob => {
+      fechar();
+      try { resolve(/^video\//.test(blob.type) ? await quadroDoVideo(blob) : await canvasDeBlob(blob)); }
+      catch (e) { toast('Não consegui abrir o arquivo: ' + e.message); resolve(null); }
+    };
+    const grade = h('div', { class: 'miniaturas' });
+    locais.forEach(({ a, blob }) => {
+      const u = URL.createObjectURL(blob);
+      grade.appendChild(h('button', { type: 'button', class: 'thumb', onclick: () => usar(blob) },
+        /^video/.test(blob.type) ? h('span', { class: 'thumb-ic', text: '▶ vídeo' }) : h('img', { src: u, alt: '' }),
+        h('span', { class: 'thumb-leg', text: a.legenda || a.nome })));
+    });
+    const inpCam = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true, onchange: e => e.target.files[0] && usar(e.target.files[0]) });
+    const inpArq = h('input', { type: 'file', accept: 'image/*,video/*', hidden: true, onchange: e => e.target.files[0] && usar(e.target.files[0]) });
+    fechar = modal(h('div', null,
+      h('h3', { text: 'Medir ângulos' }),
+      h('p', { class: 'peq', text: 'Use foto ou vídeo de lado (perfil), com a câmera na altura do corpo e o corpo inteiro aparecendo. Foto de frente ou de cima distorce os ângulos.' }),
+      locais.length ? h('p', { class: 'rot', text: 'Fotos e vídeos deste registro' }) : null, locais.length ? grade : null,
+      h('div', { class: 'linha-bts' },
+        h('label', { class: 'bt' }, '📷 Tirar foto', inpCam),
+        h('label', { class: 'bt sec' }, '🖼 Escolher foto ou vídeo', inpArq),
+        h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => { fechar(); resolve(null); } }))));
+  });
+}
+
+/** Tela de marcação dos pontos. Devolve { angulos, faixas, frente, pontos, blob } ou null. */
+function marcarPontosGonio(fonte, anterior) {
+  return new Promise(resolve => {
+    const W = fonte.width, H = fonte.height;
+    const P = {}; let atual = 0, frente = (anterior && anterior.frente) || 1, arrastando = null;
+    if (anterior && anterior.pontos) Object.keys(anterior.pontos).forEach(k => { const p = anterior.pontos[k]; if (p) P[k] = { x: p.x * W, y: p.y * H }; });
+    while (atual < GONIO_PONTOS.length && P[GONIO_PONTOS[atual].k]) atual++;
+    const cv = h('canvas', { class: 'gonio-cv' }); cv.width = W; cv.height = H;
+    const g = cv.getContext('2d');
+    const instr = h('p', { class: 'gonio-instr' });
+    const res = h('div', { class: 'gonio-res' });
+    const escala = () => W / cv.getBoundingClientRect().width;
+    function desenhar(ctx, final) {
+      const e = Math.max(W, H) / 900;
+      ctx.drawImage(fonte, 0, 0, W, H);
+      ctx.lineCap = 'round';
+      GONIO_LINHAS.forEach(([a, b]) => { if (P[a] && P[b]) { ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 7 * e; ctx.beginPath(); ctx.moveTo(P[a].x, P[a].y); ctx.lineTo(P[b].x, P[b].y); ctx.stroke();
+        ctx.strokeStyle = a === 'quadril' ? '#ffd54a' : '#38e0c8'; ctx.lineWidth = 4 * e; ctx.stroke(); } });
+      if (P.quadril && P.ombro) { // linha vertical de referência do tronco
+        ctx.setLineDash([10 * e, 8 * e]); ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 2 * e;
+        ctx.beginPath(); ctx.moveTo(P.quadril.x, P.quadril.y); ctx.lineTo(P.quadril.x, P.quadril.y - Math.hypot(P.ombro.x - P.quadril.x, P.ombro.y - P.quadril.y)); ctx.stroke(); ctx.setLineDash([]);
+      }
+      GONIO_PONTOS.forEach((pt, i) => { const p = P[pt.k]; if (!p) return;
+        ctx.fillStyle = i === atual && !final ? '#ff5a5f' : '#ffffff'; ctx.strokeStyle = '#111'; ctx.lineWidth = 2 * e;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 9 * e, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); });
+      const a = calcularAngulos(P, frente);
+      const rotulo = (k, ponto) => { if (a[k] === undefined || !P[ponto]) return; const t = Math.round(Math.abs(a[k])) + '°';
+        ctx.font = 'bold ' + Math.round(22 * e) + 'px system-ui, sans-serif'; const w = ctx.measureText(t).width;
+        const x = P[ponto].x + 14 * e, y = P[ponto].y - 14 * e;
+        ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(x - 4 * e, y - 22 * e, w + 8 * e, 28 * e); ctx.fillStyle = '#fff'; ctx.fillText(t, x, y); };
+      rotulo('tronco', 'quadril'); rotulo('braco', 'ombro'); rotulo('antebraco', 'cotovelo'); rotulo('punho', 'punho'); rotulo('pescoco', 'orelha');
+      if (final) { // legenda na própria imagem (evidência)
+        const f = faixasRULA(a);
+        const linhas = Object.keys(GONIO_NOMES).filter(k => a[k] !== undefined).map(k => GONIO_NOMES[k] + ': ' + Math.round(Math.abs(a[k])) + '° ' + f[k].t + ' (RULA ' + f[k].n + ')');
+        linhas.push('Medido em foto de perfil (2D) · ' + dataHoraBr(agoraIso()));
+        const tam = Math.round(18 * e); ctx.font = tam + 'px system-ui, sans-serif';
+        const larg = Math.max(...linhas.map(l => ctx.measureText(l).width)) + 20 * e, alt = linhas.length * (tam + 6 * e) + 14 * e;
+        ctx.fillStyle = 'rgba(0,0,0,.72)'; ctx.fillRect(10 * e, H - alt - 10 * e, larg, alt);
+        ctx.fillStyle = '#fff'; linhas.forEach((l, i) => ctx.fillText(l, 20 * e, H - alt - 10 * e + 8 * e + (i + 1) * (tam + 6 * e) - 6 * e));
+      }
+      return a;
+    }
+    function atualizar() {
+      const a = desenhar(g, false);
+      instr.innerHTML = '';
+      if (atual < GONIO_PONTOS.length) instr.append('Toque no ', h('strong', { text: GONIO_PONTOS[atual].n }), ' (' + GONIO_PONTOS[atual].d + '). Ponto ' + (atual + 1) + ' de ' + GONIO_PONTOS.length + '.');
+      else instr.append('Pontos marcados. Arraste um ponto para ajustar, ou toque em Concluir.');
+      const f = faixasRULA(a);
+      res.innerHTML = '';
+      Object.keys(GONIO_NOMES).forEach(k => { if (a[k] === undefined) return;
+        res.appendChild(h('span', { class: 'gonio-chip' }, h('strong', { text: GONIO_NOMES[k] + ' ' + Math.round(Math.abs(a[k])) + '°' }), ' ' + f[k].t + ' → ' + f[k].n)); });
+      btPular.hidden = atual >= GONIO_PONTOS.length;
+    }
+    const pos = e => { const r = cv.getBoundingClientRect(), k = escala(); return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k }; };
+    cv.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      const p = pos(e), raio = (atual < GONIO_PONTOS.length ? 10 : 26) * escala(); // marcando: só pega um ponto se tocar bem em cima dele
+      const perto = GONIO_PONTOS.map(pt => pt.k).filter(k => P[k]).find(k => Math.hypot(P[k].x - p.x, P[k].y - p.y) < raio);
+      if (perto) { arrastando = perto; cv.setPointerCapture(e.pointerId); return; }
+      if (atual >= GONIO_PONTOS.length) return;
+      P[GONIO_PONTOS[atual].k] = p; atual++;
+      while (atual < GONIO_PONTOS.length && P[GONIO_PONTOS[atual].k]) atual++;
+      atualizar();
+    });
+    cv.addEventListener('pointermove', e => { if (!arrastando) return; P[arrastando] = pos(e); atualizar(); });
+    cv.addEventListener('pointerup', () => { arrastando = null; });
+    const btPular = h('button', { class: 'bt sec pequeno', text: 'Pular este ponto', onclick: () => { if (atual < GONIO_PONTOS.length) { atual++; atualizar(); } } });
+    const lado = chips(['◀ Virada para a esquerda', 'Virada para a direita ▶'], frente === 1 ? 'Virada para a direita ▶' : '◀ Virada para a esquerda', false, v => { frente = /esquerda/.test(v) ? -1 : 1; atualizar(); });
+    const fechar = modal(h('div', { class: 'gonio-box' },
+      h('div', { class: 'gonio-topo' }, h('span', { class: 'peq', text: 'A pessoa na foto está' }), lado),
+      instr, h('div', { class: 'gonio-area' }, cv), res,
+      h('div', { class: 'linha-bts' }, btPular,
+        h('button', { class: 'bt sec pequeno', text: 'Desfazer', onclick: () => {
+          for (let i = GONIO_PONTOS.length - 1; i >= 0; i--) if (P[GONIO_PONTOS[i].k]) { delete P[GONIO_PONTOS[i].k]; atual = i; break; }
+          atualizar();
+        } }),
+        h('button', { class: 'bt sec pequeno', text: 'Cancelar', onclick: () => { fechar(); resolve(null); } }),
+        h('button', { class: 'bt pequeno', text: 'Concluir', onclick: async () => {
+          const a = calcularAngulos(P, frente);
+          if (!Object.keys(a).length) { toast('Marque ao menos dois pontos ligados (ex.: ombro e cotovelo).'); return; }
+          const out = document.createElement('canvas'); out.width = W; out.height = H;
+          desenhar(out.getContext('2d'), true);
+          const blob = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.88));
+          const pontos = {}; Object.keys(P).forEach(k => { pontos[k] = { x: +(P[k].x / W).toFixed(4), y: +(P[k].y / H).toFixed(4) }; });
+          const ang = {}; Object.keys(a).forEach(k => { ang[k] = Math.round(a[k] * 10) / 10; });
+          fechar(); resolve({ angulos: ang, faixas: faixasRULA(a), frente, pontos, blob });
+        } }))), { cheio: true });
+    atualizar();
+  });
+}
+
+CONTROLES.goniometro = function (c, esc, path) {
+  const reg = S.editor.reg, f = S.editor.f;
+  const box = h('div', { class: 'gonio-campo' });
+  async function desenhar() {
+    box.innerHTML = '';
+    const v = esc[c.id];
+    if (v && v.anexo) {
+      const u = await urlDoAnexo(v.anexo);
+      if (u) box.appendChild(h('img', { class: 'gonio-prev', src: u, alt: 'ângulos medidos', onclick: () => { let fx; fx = modal(h('div', null, h('img', { class: 'ver-img', src: u }), h('button', { class: 'bt larga', text: 'Fechar', onclick: () => fx() }))); } }));
+      box.appendChild(h('p', { class: 'peq', text: textoAngulos(v) + (v.em ? ' · medido em ' + dataHoraBr(v.em) : '') }));
+    }
+    box.appendChild(h('div', { class: 'linha-bts' }, h('button', { type: 'button', class: 'bt' + (v && v.anexo ? ' sec' : ''), text: v && v.anexo ? '📐 Medir de novo' : '📐 Medir ângulos na foto ou no vídeo', onclick: medir })));
+  }
+  async function medir() {
+    await salvarEditorAgora();
+    const fonte = await escolherImagemGonio(reg);
+    if (!fonte) return;
+    const r = await marcarPontosGonio(fonte, null);
+    if (!r) return;
+    if (esc[c.id] && esc[c.id].anexo) await removerAnexo(reg, esc[c.id].anexo);
+    const a = await adicionarAnexo(reg, path, c, r.blob, 'angulos', 'jpg');
+    a.legenda = 'Ângulos medidos: ' + textoAngulos({ angulos: r.angulos });
+    esc[c.id] = { anexo: a.id, angulos: r.angulos, frente: r.frente, pontos: r.pontos, em: agoraIso() };
+    // preenche o RULA com a faixa de cada ângulo
+    const feitos = [];
+    Object.keys(r.faixas).forEach(k => {
+      const campo = f.campos.find(x => x.id === k);
+      if (!campo || !campo.opcoes) return;
+      const op = campo.opcoes.find(o => o.startsWith(r.faixas[k].n + ' - '));
+      if (!op) return;
+      reg.valores[k] = op; feitos.push(GONIO_NOMES[k]);
+      const ch = document.querySelector('.chips[data-campo="' + k + '"]'); if (ch && ch.definir) ch.definir(op);
+    });
+    alterou(); await salvarEditorAgora(); desenhar();
+    toast(feitos.length ? 'Preenchido pelas medidas: ' + feitos.join(', ') + '. Confira e marque os ajustes (+1) à mão.' : 'Ângulos salvos.', 7000);
+  }
+  desenhar();
+  return box;
+};
 
 /* ======================= TEMA E EFEITO DE CLIQUE ======================= */
 function aplicarTema() {
