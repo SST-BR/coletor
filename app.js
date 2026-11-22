@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.7.1';
+const VERSAO_APP = '1.8.0';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -102,6 +102,7 @@ const agoraIso = () => new Date().toISOString();
 const dois = n => String(n).padStart(2, '0');
 function hojeIso() { const d = new Date(); return d.getFullYear() + '-' + dois(d.getMonth() + 1) + '-' + dois(d.getDate()); }
 function horaAgora() { const d = new Date(); return dois(d.getHours()) + ':' + dois(d.getMinutes()); }
+function dataBr(iso) { const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[3] + '/' + m[2] + '/' + m[1] : ''; }
 function dataHoraBr(iso) { if (!iso) return ''; const d = new Date(iso); return dois(d.getDate()) + '/' + dois(d.getMonth() + 1) + ' ' + dois(d.getHours()) + ':' + dois(d.getMinutes()); }
 function carimboArquivo() { const d = new Date(); return d.getFullYear() + dois(d.getMonth() + 1) + dois(d.getDate()) + '-' + dois(d.getHours()) + dois(d.getMinutes()) + dois(d.getSeconds()); }
 function numero(v) { if (v === '' || v === null || v === undefined) return NaN; return Number(String(v).trim().replace(/\s/g, '').replace(',', '.')); }
@@ -237,6 +238,7 @@ function aplicarPadroes(campos, alvo) {
 }
 
 async function novoRegistro(formId, pre) {
+  if (!perm('coletar')) { toast('Seu perfil não faz coleta de dados.'); return; }
   const f = form(formId);
   if (!f) return;
   if (!f.semFilial && !S.ctx.filial) { toast('Escolha a filial na tela inicial antes de começar.'); location.hash = '#/'; return; }
@@ -367,23 +369,120 @@ function textoCarimbo(reg) {
 }
 
 /* ================================ SERVIDOR ================================ */
+/* ============================ ACESSO E PERMISSÕES ============================ */
+/** Administrador: entra com a chave do servidor. Demais usuários: e-mail e senha (token de sessão). */
+function ehAdmin() { return !!S.ajustes.chave; }
+function conectado() { return !!S.ajustes.url && (!!S.ajustes.chave || !!S.ajustes.token); }
+/** Permissão do perfil (o servidor confere de novo em toda chamada). */
+function perm(k) {
+  if (ehAdmin()) return true;
+  const u = S.ajustes.usuario;
+  return !!(u && u.permissoes && u.permissoes[k]);
+}
+function b64url(t) { return btoa(unescape(encodeURIComponent(t))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function deB64url(t) { t = String(t || '').replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; return decodeURIComponent(escape(atob(t))); }
+/** Link de acesso que o administrador envia: abre o app já apontando para o servidor, sem mostrar o endereço. */
+function linkAcesso() { return location.origin + location.pathname + '#/entrar/' + b64url(S.ajustes.url); }
+
+async function telaEntrar(app, param) {
+  definirTopo('Entrar', false);
+  if (param) {
+    try {
+      const u = deB64url(param);
+      if (/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(u) && !ehAdmin()) { S.ajustes.url = u; await DB.kvSet('ajustes', S.ajustes); }
+    } catch (e) { }
+    history.replaceState(null, '', '#/entrar');
+  }
+  if (!S.ajustes.url) {
+    app.appendChild(h('div', { class: 'cartao destaque' }, h('h2', { text: 'Acesso' }),
+      h('p', { text: 'Abra o link de acesso que o administrador enviou para você. Ele prepara este aparelho para o seu login.' }),
+      h('a', { class: 'bt sec', href: '#/ajustes', text: 'Sou o administrador' })));
+    return;
+  }
+  const email = h('input', { class: 'inp', type: 'email', autocomplete: 'username', value: (S.ajustes.usuario && S.ajustes.usuario.email) || S.ajustes.ultimoEmail || '', placeholder: 'seu@email.com' });
+  const senha = h('input', { class: 'inp', type: 'password', autocomplete: 'current-password' });
+  const codigo = h('input', { class: 'inp', autocomplete: 'one-time-code', placeholder: 'XXXX-XXXX', style: 'text-transform:uppercase' });
+  const nova1 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password' });
+  const nova2 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password' });
+  let modoAtivar = false;
+  const caixa = h('div', { class: 'cartao destaque' });
+  async function concluir(j) {
+    S.ajustes = Object.assign({}, S.ajustes, { token: j.token, expira: j.expira, usuario: j.usuario, ultimoEmail: j.usuario.email, avaliador: String(j.usuario.nome || j.usuario.email).toUpperCase() });
+    await DB.kvSet('ajustes', S.ajustes);
+    toast('Bem-vindo, ' + (j.usuario.nome || j.usuario.email) + '.');
+    if (await baixarConfig(false)) {
+      if (j.usuario.filiais && j.usuario.filiais.length === 1) { S.ctx.filial = j.usuario.filiais[0]; await DB.kvSet('ctx', S.ctx); }
+      location.hash = '#/';
+    }
+  }
+  async function enviar() {
+    try {
+      if (modoAtivar) {
+        if (nova1.value !== nova2.value) { toast('As duas senhas não são iguais.'); return; }
+        toast('Ativando...', 20000);
+        concluir(await api0({ acao: 'ativar', email: email.value.trim(), codigo: codigo.value.trim(), senha: nova1.value, aparelho: navigator.userAgent.slice(0, 80) }));
+      } else {
+        toast('Entrando...', 20000);
+        concluir(await api0({ acao: 'login', email: email.value.trim(), senha: senha.value, aparelho: navigator.userAgent.slice(0, 80) }));
+      }
+    } catch (e) { toast(e.message, 7000); if (e.codigo === 'ATIVAR') { modoAtivar = true; desenhar(); } }
+  }
+  function desenhar() {
+    caixa.innerHTML = '';
+    caixa.appendChild(h('h2', { text: modoAtivar ? 'Primeiro acesso' : 'Entrar' }));
+    caixa.appendChild(h('label', { class: 'rot', text: 'E-mail' })); caixa.appendChild(email);
+    if (modoAtivar) {
+      caixa.appendChild(h('label', { class: 'rot', text: 'Código de ativação (enviado pelo administrador)' })); caixa.appendChild(codigo);
+      caixa.appendChild(h('label', { class: 'rot', text: 'Crie sua senha (mínimo 8 caracteres, com letras e números)' })); caixa.appendChild(nova1);
+      caixa.appendChild(h('label', { class: 'rot', text: 'Repita a senha' })); caixa.appendChild(nova2);
+    } else {
+      caixa.appendChild(h('label', { class: 'rot', text: 'Senha' })); caixa.appendChild(senha);
+    }
+    caixa.appendChild(h('button', { class: 'bt larga', text: modoAtivar ? 'Ativar e entrar' : 'Entrar', onclick: enviar }));
+    caixa.appendChild(h('button', { class: 'bt sec larga', text: modoAtivar ? 'Já tenho senha' : 'Primeiro acesso ou novo código', onclick: () => { modoAtivar = !modoAtivar; desenhar(); } }));
+    caixa.appendChild(h('p', { class: 'peq', text: 'Esqueceu a senha? Peça um novo código ao administrador.' }));
+  }
+  desenhar();
+  app.appendChild(caixa);
+}
+
+/** Chamada sem sessão (login e ativação). */
+async function api0(corpo) {
+  const r = await fetch(S.ajustes.url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(corpo) });
+  const j = JSON.parse(await r.text());
+  if (!j.ok) { const e = new Error(j.erro || 'Erro no servidor.'); e.codigo = j.codigo; throw e; }
+  return j;
+}
+
+async function sairDaConta() {
+  if (!(await confirmar('Sair da sua conta neste aparelho? Os registros que ainda não foram enviados ficam guardados e são enviados quando você entrar de novo.', 'Sair'))) return;
+  try { if (navigator.onLine) await api({ acao: 'sair' }, 20000); } catch (e) { }
+  S.ajustes.token = ''; await DB.kvSet('ajustes', S.ajustes);
+  location.hash = '#/entrar';
+}
+
 async function api(corpo, tempo) {
   if (window.SERVIDOR_DEMO) return window.SERVIDOR_DEMO(corpo);
-  if (!S.ajustes.url || !S.ajustes.chave) throw new Error('Configure o endereço do servidor e a chave em Ajustes.');
+  if (!conectado()) throw new Error(S.ajustes.chave ? 'Configure o endereço do servidor em Ajustes.' : 'Entre com seu e-mail e senha.');
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), tempo || 60000);
   try {
     const r = await fetch(S.ajustes.url, {
       method: 'POST', redirect: 'follow', signal: ctl.signal,
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({}, corpo, { chave: S.ajustes.chave }))
+      body: JSON.stringify(Object.assign({}, corpo, S.ajustes.chave ? { chave: S.ajustes.chave } : { token: S.ajustes.token }))
     });
     const txt = await r.text();
     let j;
     try { j = JSON.parse(txt); } catch (e) {
       throw new Error('Resposta inesperada do servidor. Confira se o endereço termina em /exec e se a implantação está como "Qualquer pessoa".');
     }
-    if (!j.ok) { const e = new Error(j.erro || 'Erro no servidor.'); e.codigo = j.codigo; throw e; }
+    if (!j.ok) {
+      const e = new Error(j.erro || 'Erro no servidor.'); e.codigo = j.codigo;
+      if (j.codigo === 'SESSAO' && !S.ajustes.chave && S.ajustes.token) { S.ajustes.token = ''; await DB.kvSet('ajustes', S.ajustes); setTimeout(() => { location.hash = '#/entrar'; }, 300); }
+      throw e;
+    }
+    if (j.usuario && corpo.acao !== 'usuarios-listar') { S.ajustes.usuario = j.usuario; if (!S.ajustes.chave && j.usuario.nome) S.ajustes.avaliador = String(j.usuario.nome).toUpperCase(); DB.kvSet('ajustes', S.ajustes); }
     return j;
   } catch (e) {
     if (e.name === 'AbortError') throw new Error('Tempo esgotado (sinal fraco?). Tente de novo.');
@@ -415,7 +514,7 @@ function semDadosLocais(r) {
 
 async function sincronizar(manual) {
   if (S.sinc) return;
-  if (!S.ajustes.url || !S.ajustes.chave) { if (manual) toast('Configure o servidor em Ajustes.'); return; }
+  if (!conectado()) { if (manual) toast(S.ajustes.chave ? 'Configure o servidor em Ajustes.' : 'Entre com seu e-mail e senha.'); return; }
   if (!navigator.onLine) { if (manual) toast('Sem internet. Tudo continua guardado neste aparelho.'); return; }
   S.sinc = true;
   let ok = 0, erros = [], grandes = 0, rec = 0, erroRec = '', total = 0;
@@ -608,6 +707,9 @@ async function rotear() {
   const app = $('#app');
   app.innerHTML = '';
   window.scrollTo(0, 0);
+  if (rota[0] === 'entrar') return telaEntrar(app, rota[1]);
+  if (!window.SERVIDOR_DEMO && !S.ajustes.chave && !S.ajustes.token && rota[0] !== 'ajustes') return telaEntrar(app);
+  if (rota[0] === 'usuarios') return telaUsuarios(app);
   if (rota[0] === 'g' && rota[1]) return telaGrupo(app, Number(rota[1]));
   if (rota[0] === 'f' && rota[1]) return telaFormulario(app, rota[1]);
   if (rota[0] === 'r' && rota[1]) return telaRegistro(app, rota[1]);
@@ -816,8 +918,19 @@ async function telaAjustes(app) {
     S.ajustes = Object.assign({}, S.ajustes, { url: url.value.trim(), chave: chave.value.trim(), avaliador: aval.value.trim() });
     await DB.kvSet('ajustes', S.ajustes);
   }
-  app.appendChild(h('div', { class: 'cartao' },
-    h('h3', { text: 'Servidor' }),
+  if (!ehAdmin() && S.ajustes.token) {
+    const u = S.ajustes.usuario || {};
+    app.appendChild(h('div', { class: 'cartao' },
+      h('h3', { text: 'Sua conta' }),
+      h('p', null, h('strong', { text: u.nome || u.email || '' })),
+      h('p', { class: 'peq', text: (u.email || '') + ' · ' + (u.perfilNome || '') + (u.validade ? ' · acesso até ' + dataBr(u.validade) : '') }),
+      h('p', { class: 'peq', text: 'Filiais: ' + ((u.filiais && u.filiais.length) ? u.filiais.join(', ') : 'todas') }),
+      flagCarimbo(),
+      h('div', { class: 'linha-bts' },
+        h('button', { class: 'bt', text: 'Baixar formulários', onclick: async () => { if (await baixarConfig(false)) location.hash = '#/'; } }),
+        h('button', { class: 'bt sec', text: 'Sair da conta', onclick: sairDaConta }))));
+  } else app.appendChild(h('div', { class: 'cartao' },
+    h('h3', { text: 'Servidor (administrador)' }),
     h('label', { class: 'rot', text: 'Endereço do servidor (termina em /exec)' }), url,
     h('label', { class: 'rot', text: 'Chave' }), h('div', { class: 'linha-inp' }, chave,
       h('button', { class: 'bt sec mini', text: 'ver', onclick: () => { chave.type = chave.type === 'password' ? 'text' : 'password'; } })),
@@ -828,7 +941,8 @@ async function telaAjustes(app) {
         await salvar();
         try { const j = await api({ acao: 'ping' }); toast('Conectado. Servidor versão ' + j.versao + '.'); } catch (e) { toast(e.message, 6000); }
       } }),
-      h('button', { class: 'bt', text: 'Baixar formulários', onclick: async () => { await salvar(); if (await baixarConfig(false)) location.hash = '#/'; } }))));
+      h('button', { class: 'bt', text: 'Baixar formulários', onclick: async () => { await salvar(); if (await baixarConfig(false)) location.hash = '#/'; } })),
+    ehAdmin() ? h('a', { class: 'bt sec larga', href: '#/usuarios', text: '👤 Usuários e permissões' }) : null));
 
   // Dados da filial: QL e funcionários
   const fLocal = S.ctx.filial ? await funcionariosLocais(S.ctx.filial) : null;
@@ -836,9 +950,9 @@ async function telaAjustes(app) {
   const inpFu = h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('FUNC', e.target.files[0]); e.target.value = ''; } });
   app.appendChild(h('div', { class: 'cartao' },
     h('h3', { text: 'Dados da filial' }),
-    h('p', { class: 'peq', text: 'Envie o arquivo CSV exportado do sistema. Antes de gravar aparece um resumo do que muda, e só a filial escolhida (ou as filiais do arquivo) é trocada.' }),
-    h('p', { class: 'peq', text: 'Quadro de lotação: colunas FILIAL, DESC_SECAO, NOME_FUNCAO e ALOCADOS (as mesmas do QL que já usa). Funcionários: REGIONAL, BANDEIRA, FILIAL, NOME, FUNÇÃO, SEÇÃO e MATRICULA.' }),
-    h('div', { class: 'linha-bts' },
+    !perm('importar') ? null : h('p', { class: 'peq', text: 'Envie o arquivo CSV exportado do sistema. Antes de gravar aparece um resumo do que muda, e só a filial escolhida (ou as filiais do arquivo) é trocada.' }),
+    !perm('importar') ? null : h('p', { class: 'peq', text: 'Quadro de lotação: colunas FILIAL, DESC_SECAO, NOME_FUNCAO e ALOCADOS (as mesmas do QL que já usa). Funcionários: REGIONAL, BANDEIRA, FILIAL, NOME, FUNÇÃO, SEÇÃO e MATRICULA.' }),
+    !perm('importar') ? null : h('div', { class: 'linha-bts' },
       h('label', { class: 'bt sec' }, '📊 Atualizar QL (CSV)', inpQL),
       h('label', { class: 'bt sec' }, '👥 Atualizar funcionários (CSV)', inpFu),
       h('label', { class: 'bt sec' }, '📋 Atualizar descrições das funções (CSV)', h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('DESC', e.target.files[0]); e.target.value = ''; } })),
@@ -976,6 +1090,15 @@ async function telaDocumentos(app) {
     return;
   }
   const chaveCache = 'docs:' + fil;
+  async function validarNA(x, aprovar) {
+    let obs = '';
+    if (!aprovar) { obs = await perguntar('Por que recusar? O método volta a ficar pendente para avaliação.'); if (obs === null || obs === undefined) return; }
+    try {
+      await api({ acao: 'plano-validar', filial: fil, secao: x.secao, funcao: x.funcao, metodo: x.metodo, aprovar, obs }, 60000);
+      toast(aprovar ? 'Validado. Entra na AET.' : 'Recusado. O método voltou a ficar pendente.');
+      carregar(true);
+    } catch (e) { toast(e.message, 7000); }
+  }
   let dados = await DB.kvGet(chaveCache);
   const opcoesDocs = (await DB.kvGet('docsOpcoes:' + fil)) || {};
   const sel = new Set();
@@ -998,6 +1121,18 @@ async function telaDocumentos(app) {
         h('div', { class: 'rd ' + (r['Não atende'] ? 'nc' : 'ok') }, h('strong', { text: String(r['Não atende'] || 0) }), h('span', { text: 'não atendidos (vão ao plano)' })),
         h('div', { class: 'rd ' + (r['Sem evidência'] ? 'pend' : 'ok') }, h('strong', { text: String(r['Sem evidência'] || 0) }), h('span', { text: 'sem evidência' }))));
       if (dados.plano) caixaSit.appendChild(h('a', { class: 'bt sec larga', href: '#/plano', text: '🗺️ Plano de avaliação: ' + (dados.plano.pendentes ? dados.plano.pendentes + ' método(s) pendente(s)' : 'tudo avaliado') }));
+      const ag = dados.aguardandoValidacao || [];
+      if (ag.length) {
+        const box = h('div', { class: 'cartao alerta validar' }, h('strong', { text: ag.length + ' "não se aplica" aguardando validação' }),
+          h('p', { class: 'peq', text: perm('validarNA') ? 'Registrados por outros avaliadores. Valide ou recuse antes de gerar a AET: só os validados entram no documento.' : 'Registrados por você ou pela equipe. O administrador valida antes de gerar a AET.' }));
+        ag.forEach(x => box.appendChild(h('div', { class: 'item-validar' },
+          h('div', null, h('strong', { text: x.funcao + ' · ' + x.nome }), h('small', { text: 'GHE - ' + x.secao + (x.exig === 'PGR' ? ' · risco do PGR' : ' · sugestão de campo') }),
+            h('p', { class: 'peq', text: 'Motivo: ' + x.motivo + (x.por ? ' (' + x.por + (x.em ? ', ' + x.em.slice(0, 16) : '') + ')' : '') })),
+          perm('validarNA') ? h('div', { class: 'linha-bts' },
+            h('button', { class: 'bt mini', text: 'Validar', onclick: () => validarNA(x, true) }),
+            h('button', { class: 'bt sec mini', text: 'Recusar', onclick: () => validarNA(x, false) })) : null)));
+        caixaSit.appendChild(box);
+      }
       if ((dados.pendenciasLista || []).length) {
         const det = h('details', { class: 'pend-lista' }, h('summary', { text: 'Ver o que falta coletar (' + dados.pendenciasLista.length + ')' }),
           h('ul', null, dados.pendenciasLista.map(x => h('li', null, h('strong', { text: (x.secao && x.secao !== '-' ? x.secao + ' · ' : '') + x.funcao }), h('br'), x.pendencia, x.oQueFazer ? h('div', { class: 'peq', text: x.oQueFazer }) : null))));
@@ -1009,6 +1144,8 @@ async function telaDocumentos(app) {
     // Gerar
     caixaGerar.innerHTML = '';
     caixaGerar.appendChild(h('h3', { text: 'Gerar' }));
+    const podeDocs = perm('documentos');
+    if (!podeDocs) caixaGerar.appendChild(h('p', { class: 'peq', text: 'Seu perfil gera o relatório de revisão do PGR. A AET e o relatório por seção são gerados pelo administrador.' }));
     const inpEmissao = h('input', { class: 'inp curto-data', type: 'date', value: hojeIso(), max: hojeIso() });
     caixaGerar.appendChild(h('div', { class: 'linha-emissao' }, h('label', { class: 'rot', text: 'Data de emissão do documento' }), inpEmissao,
       h('p', { class: 'peq', text: 'Vai na capa, na identificação e na assinatura.' })));
@@ -1020,7 +1157,7 @@ async function telaDocumentos(app) {
       h('div', { class: 'linha-sel' }, inpIni, inpFim),
       h('p', { class: 'peq', text: 'É o período que aparece nos documentos. A data e a hora de cada alteração dos registros ficam só na planilha, para consulta, e não vão para os documentos. Se deixar em branco, o documento usa os dias das aberturas de visita.' })));
     const chkRiscos = h('input', { type: 'checkbox', checked: !!opcoesDocs.riscosNovos, onchange: e => { opcoesDocs.riscosNovos = e.target.checked; guardarOpcoes(); } });
-    caixaGerar.appendChild(h('label', { class: 'flag' }, chkRiscos, 'Incluir na AET os riscos para revisão do PGR' + (dados && dados.revisaoPGR !== null && dados.revisaoPGR !== undefined ? ' (' + dados.revisaoPGR + ' hoje)' : '')));
+    if (podeDocs) caixaGerar.appendChild(h('label', { class: 'flag' }, chkRiscos, 'Incluir na AET os riscos para revisão do PGR' + (dados && dados.revisaoPGR !== null && dados.revisaoPGR !== undefined ? ' (' + dados.revisaoPGR + ' hoje)' : '')));
     const emissao = () => {
       const v = inpEmissao.value;
       if (!v) return hojeIso();
@@ -1028,14 +1165,14 @@ async function telaDocumentos(app) {
       return v;
     };
     const extras = () => ({ periodoIni: inpIni.value, periodoFim: inpFim.value, incluirRiscosNovos: chkRiscos.checked });
-    caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d) gerar(Object.assign({ tipo: 'AET', dataEmissao: d }, extras())); } }));
+    if (podeDocs) caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d) gerar(Object.assign({ tipo: 'AET', dataEmissao: d }, extras())); } }));
     const secoes = (dados && dados.secoes && dados.secoes.length) ? dados.secoes : secoesDe(fil);
     const selSec = h('select', { class: 'inp' }, h('option', { value: '', text: 'Escolha a seção' }), secoes.map(x => h('option', { value: x, text: x })));
     const recortes = (dados && dados.recortes) || ['Completo', 'Ergonomia', 'Conforto ambiental', 'Não conformidades e plano de ação'];
     const selRec = h('select', { class: 'inp' }, recortes.map((x, i) => h('option', { value: String(i), text: x })));
-    caixaGerar.appendChild(h('label', { class: 'rot', text: 'Relatório de uma seção' }));
-    caixaGerar.appendChild(h('div', { class: 'linha-sel' }, selSec, selRec));
-    caixaGerar.appendChild(h('button', { class: 'bt sec larga', text: 'Gerar relatório da seção', onclick: () => {
+    if (podeDocs) caixaGerar.appendChild(h('label', { class: 'rot', text: 'Relatório de uma seção' }));
+    if (podeDocs) caixaGerar.appendChild(h('div', { class: 'linha-sel' }, selSec, selRec));
+    if (podeDocs) caixaGerar.appendChild(h('button', { class: 'bt sec larga', text: 'Gerar relatório da seção', onclick: () => {
       if (!selSec.value) { toast('Escolha a seção.'); return; }
       const d = emissao(); if (!d) return;
       gerar(Object.assign({ tipo: 'SECAO', secao: selSec.value, recorte: Number(selRec.value), dataEmissao: d }, extras()));
@@ -1065,7 +1202,7 @@ async function telaDocumentos(app) {
     });
     caixaDocs.appendChild(lista);
     const btEmail = h('button', { class: 'bt larga', text: 'Enviar selecionados por e-mail', onclick: () => enviarEmail(docs.filter(d => sel.has(d.id))) });
-    caixaDocs.appendChild(btEmail);
+    if (perm('documentos')) caixaDocs.appendChild(btEmail);
     function atualizarBtEmail() { btEmail.disabled = !sel.size; btEmail.textContent = sel.size ? 'Enviar ' + sel.size + ' documento(s) por e-mail' : 'Marque os documentos para enviar por e-mail'; }
     atualizarBtEmail();
   }
@@ -1161,10 +1298,116 @@ async function telaDocumentos(app) {
   carregar(false);
 }
 
+/* ============================ USUÁRIOS (ADMINISTRADOR) ============================ */
+function proximaSexta() {
+  const d = new Date(); d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7 || 7));
+  return d.getFullYear() + '-' + dois(d.getMonth() + 1) + '-' + dois(d.getDate());
+}
+
+async function telaUsuarios(app) {
+  definirTopo('Usuários e permissões', true);
+  if (!ehAdmin()) { app.appendChild(h('div', { class: 'cartao' }, h('p', { text: 'Só o administrador cadastra usuários.' }))); return; }
+  const topo = h('div', { class: 'cartao' }), lista = h('div');
+  app.appendChild(topo); app.appendChild(lista);
+  let D = null;
+  const nomesPerfis = { ADMIN: 'Administrador', COORDENADOR: 'Coordenador', COLETOR: 'Coletor (TST)', CONSULTA: 'Consulta' };
+
+  function mostrarCodigo(j, nome) {
+    const ate = new Date(Date.now() + 48 * 36e5);
+    const texto = 'Acesso ao Coletor de Campo SST\n\n1. Abra o link: ' + linkAcesso() + '\n2. Toque em "Primeiro acesso ou novo código".\n3. E-mail: ' + j.email + '\n4. Código de ativação: ' + j.codigo +
+      ' (vale até ' + dois(ate.getDate()) + '/' + dois(ate.getMonth() + 1) + ' ' + dois(ate.getHours()) + 'h' + dois(ate.getMinutes()) + ')\n5. Crie a sua senha.\n\nNo celular, depois de entrar, use "Adicionar à tela inicial" para instalar o app.';
+    let fechar;
+    fechar = modal(h('div', null, h('h3', { text: 'Código de ativação' + (nome ? ' de ' + nome : '') }),
+      h('p', { class: 'codigo-grande', text: j.codigo }),
+      h('p', { class: 'peq', text: 'Vale por 48 horas e só uma vez. Ele não fica guardado: se perder, gere outro. Envie a mensagem abaixo para a pessoa por um canal privado.' }),
+      h('textarea', { class: 'inp', rows: 9, readonly: true, text: texto }),
+      h('div', { class: 'linha-bts' },
+        h('button', { class: 'bt', text: 'Compartilhar', onclick: async () => {
+          try { if (navigator.share) await navigator.share({ text: texto }); else { await navigator.clipboard.writeText(texto); toast('Mensagem copiada.'); } } catch (e) { }
+        } }),
+        h('button', { class: 'bt sec', text: 'Copiar', onclick: async () => { try { await navigator.clipboard.writeText(texto); toast('Mensagem copiada.'); } catch (e) { toast('Não consegui copiar; selecione o texto.'); } } }),
+        h('button', { class: 'bt sec', text: 'Fechar', onclick: () => fechar() }))));
+  }
+
+  function formulario(u) {
+    const novo = !u;
+    u = u || { perfil: 'COLETOR', filiais: S.ctx.filial ? [S.ctx.filial] : [], validade: proximaSexta(), status: 'ATIVO' };
+    const nome = h('input', { class: 'inp', value: u.nome || '', placeholder: 'Nome completo' });
+    const email = h('input', { class: 'inp', type: 'email', value: u.email || '', readonly: !novo, placeholder: 'email@empresa.com' });
+    const perfil = h('select', { class: 'inp' }, Object.keys(nomesPerfis).filter(k => k !== 'ADMIN').map(k => h('option', { value: k, text: nomesPerfis[k] })));
+    perfil.value = u.perfil === 'ADMIN' ? 'COORDENADOR' : u.perfil;
+    const validade = h('input', { class: 'inp curto-data', type: 'date', value: u.validade || '' });
+    const marcadas = new Set(u.filiais || []);
+    const fils = filiais().map(f => h('label', { class: 'flag' }, h('input', { type: 'checkbox', checked: marcadas.has(f.codigo), onchange: e => { e.target.checked ? marcadas.add(f.codigo) : marcadas.delete(f.codigo); } }), f.codigo + ' - ' + (f.nome || f.bandeira)));
+    const bloq = h('input', { type: 'checkbox', checked: u.status === 'BLOQUEADO' });
+    const permTxt = h('p', { class: 'peq' });
+    const descr = {
+      COORDENADOR: 'Coleta, lista de presença, plano (com "não se aplica" direto), valida "não se aplica", gera AET, AEP, relatórios e revisão do PGR. Não importa dados nem cadastra usuários.',
+      COLETOR: 'Coleta, lista de presença, plano, relatórios gerenciais e revisão do PGR. O "não se aplica" vai para a sua validação. Não gera AET nem relatório por seção.',
+      CONSULTA: 'Só vê o plano e os relatórios gerenciais e de revisão do PGR. Não coleta.'
+    };
+    const atualizarTxt = () => { permTxt.textContent = descr[perfil.value] || ''; };
+    perfil.onchange = atualizarTxt; atualizarTxt();
+    let fechar;
+    fechar = modal(h('div', null, h('h3', { text: novo ? 'Novo usuário' : 'Editar usuário' }),
+      h('label', { class: 'rot', text: 'Nome (aparece como avaliador nos registros)' }), nome,
+      h('label', { class: 'rot', text: 'E-mail (login)' }), email,
+      h('label', { class: 'rot', text: 'Perfil' }), perfil, permTxt,
+      h('label', { class: 'rot', text: 'Acesso válido até (inclusive)' }), validade,
+      h('label', { class: 'rot', text: 'Filiais permitidas (nenhuma marcada = todas)' }), h('div', { class: 'col-fil' }, fils),
+      novo ? null : h('label', { class: 'flag' }, bloq, 'Bloquear o acesso agora'),
+      h('div', { class: 'linha-bts' },
+        h('button', { class: 'bt', text: novo ? 'Cadastrar e gerar código' : 'Salvar', onclick: async () => {
+          if (nome.value.trim().length < 3) { toast('Informe o nome.'); return; }
+          try {
+            const j = await api({ acao: 'usuario-salvar', email: email.value.trim(), nome: nome.value.trim().toUpperCase(), perfil: perfil.value, validade: validade.value, filiais: [...marcadas], status: bloq.checked ? 'BLOQUEADO' : 'ATIVO' }, 60000);
+            fechar(); D = j; desenhar();
+            if (j.codigo) mostrarCodigo(j, nome.value.trim()); else toast('Usuário salvo.');
+          } catch (e) { toast(e.message, 7000); }
+        } }),
+        h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => fechar() }))));
+  }
+
+  async function acao(u, tipo) {
+    try {
+      if (tipo === 'codigo') {
+        if (!(await confirmar('Gerar um novo código para ' + u.nome + '? A senha atual deixa de valer e a pessoa cria outra.', 'Gerar código'))) return;
+        const j = await api({ acao: 'usuario-codigo', email: u.email }, 60000); D = j; desenhar(); mostrarCodigo(j, u.nome);
+      } else if (tipo === 'sair') {
+        const j = await api({ acao: 'usuario-sessoes-encerrar', email: u.email }, 60000); D = j; desenhar(); toast(j.encerradas + ' sessão(ões) encerrada(s).');
+      }
+    } catch (e) { toast(e.message, 7000); }
+  }
+
+  function desenhar() {
+    topo.innerHTML = ''; lista.innerHTML = '';
+    topo.appendChild(h('p', { class: 'peq', text: 'Cada pessoa entra com e-mail e senha própria. Você define o perfil, as filiais e até quando o acesso vale. O servidor confere tudo em cada ação; o celular da pessoa não recebe o endereço do servidor nem a chave.' }));
+    topo.appendChild(h('button', { class: 'bt larga', text: '+ Novo usuário', onclick: () => formulario(null) }));
+    if (!D) { lista.appendChild(h('p', { class: 'vazio', text: 'Carregando...' })); return; }
+    if (!D.usuarios.length) lista.appendChild(h('p', { class: 'vazio', text: 'Nenhum usuário cadastrado. Só você (administrador) usa o app.' }));
+    D.usuarios.forEach(u => {
+      const sit = u.status === 'BLOQUEADO' ? 'Bloqueado' : u.vencido ? 'Vencido' : !u.ativado ? (u.codigoPendente ? 'Aguardando primeiro acesso' : 'Código vencido: gere outro') : 'Ativo';
+      lista.appendChild(h('div', { class: 'cartao usuario' + (sit === 'Ativo' ? '' : ' inativo') },
+        h('div', { class: 'pf-cab' }, h('strong', { text: u.nome || u.email }),
+          h('small', { text: u.email + ' · ' + (nomesPerfis[u.perfil] || u.perfil) })),
+        h('p', { class: 'peq', text: sit + (u.validade ? ' · até ' + dataBr(u.validade) : '') + ' · filiais: ' + (u.filiais.length ? u.filiais.join(', ') : 'todas') + (u.ultimoAcesso ? ' · último acesso ' + u.ultimoAcesso.slice(0, 16) : '') + (u.sessoes ? ' · ' + u.sessoes + ' aparelho(s) conectado(s)' : '') }),
+        h('div', { class: 'linha-bts' },
+          h('button', { class: 'bt sec mini', text: 'Editar', onclick: () => formulario(u) }),
+          h('button', { class: 'bt sec mini', text: 'Novo código', onclick: () => acao(u, 'codigo') }),
+          u.sessoes ? h('button', { class: 'bt sec mini', text: 'Desconectar aparelhos', onclick: () => acao(u, 'sair') }) : null)));
+    });
+  }
+  desenhar();
+  if (!navigator.onLine) { toast('Sem internet.'); return; }
+  try { D = await api({ acao: 'usuarios-listar' }, 60000); } catch (e) { toast(e.message, 7000); }
+  if (location.hash.startsWith('#/usuarios')) desenhar();
+}
+
 /* ========================== PLANO DE AVALIAÇÃO ========================== */
 const PLANO_ST = {
   PENDENTE: { t: 'Pendente', c: 'pend' }, FEITO: { t: 'Feito', c: 'ok' }, NA: { t: 'Não se aplica', c: 'na' },
-  SUGERIDO: { t: 'Sugestão de campo', c: 'sug' }, LOCAL: { t: 'Feito neste aparelho (falta enviar)', c: 'loc' }
+  SUGERIDO: { t: 'Sugestão de campo', c: 'sug' }, LOCAL: { t: 'Feito neste aparelho (falta enviar)', c: 'loc' },
+  NA_AGUARDANDO: { t: 'Não se aplica, aguardando validação do administrador', c: 'aguard' }
 };
 const PLANO_POR_FUNCAO = { ATIVIDADE: 1, ORGANIZACAO: 1, PARTICIPACAO: 1, CARGAS: 1, RULA: 1, STRAIN: 1 };
 const SIN_SECAO = { 'PROMOTORES (INTEGRADO)': 'PROMOTORES (INTEGRADOS)', 'ACOUGUE': 'ACOUGUE CARNE FRESCA' };
@@ -1262,7 +1505,7 @@ async function telaPlano(app) {
         h('div', { class: 'pf-cab' }, h('strong', { text: l.funcao }),
           h('small', { text: textoTrabPlano(l) + (l.ghePgr ? ' · GHE ' + l.ghePgr + ' no PGR' : '') })),
         h('div', { class: 'pm-linha' }, chipsM,
-          h('button', { type: 'button', class: 'pm add', title: 'Incluir outro método', text: '+', onclick: () => incluir(l) })),
+          perm('coletar') ? h('button', { type: 'button', class: 'pm add', title: 'Incluir outro método', text: '+', onclick: () => incluir(l) }) : null),
         det.length ? h('details', { class: 'pf-det' }, h('summary', { text: 'Detalhes' }), det) : null));
     });
   }
@@ -1270,13 +1513,14 @@ async function telaPlano(app) {
   async function acoes(l, m, st) {
     let fechar;
     const bts = [];
-    bts.push(h('button', { class: 'bt larga', text: 'Novo registro: ' + m.nome, onclick: () => { fechar(); novoRegistro(m.form, { secao: l.secao, funcao: l.funcao }); } }));
+    if (perm('coletar')) bts.push(h('button', { class: 'bt larga', text: 'Novo registro: ' + m.nome, onclick: () => { fechar(); novoRegistro(m.form, { secao: l.secao, funcao: l.funcao }); } }));
     const meus = registrosVisiveis().filter(r => r.form === m.form && r.filial === fil && (m.registros || []).includes(r.id));
     meus.slice(0, 5).forEach(r => bts.push(h('a', { class: 'bt sec larga', href: '#/r/' + r.id, onclick: () => fechar(), text: 'Abrir registro de ' + dataHoraBr(r.atualizadoEm) })));
-    if (st === 'NA') bts.push(h('button', { class: 'bt sec larga', text: 'Desfazer "não se aplica"', onclick: async () => { fechar(); await decidir(l, m, '', ''); } }));
-    else if (m.exig !== 'BASE') bts.push(h('button', { class: 'bt sec larga', text: m.exig === 'CAMPO' ? 'Não avaliar (sugestão não confirmada)' : 'Não se aplica nesta filial...', onclick: async () => {
+    const podeNA = perm('naDireto') || perm('na');
+    if (st === 'NA' || st === 'NA_AGUARDANDO') { if (perm('naDireto') || st === 'NA_AGUARDANDO') bts.push(h('button', { class: 'bt sec larga', text: 'Desfazer "não se aplica"', onclick: async () => { fechar(); await decidir(l, m, '', ''); } })); }
+    else if (m.exig !== 'BASE' && podeNA) bts.push(h('button', { class: 'bt sec larga', text: m.exig === 'CAMPO' ? 'Não avaliar (sugestão não confirmada)' : 'Não se aplica nesta filial...', onclick: async () => {
       fechar();
-      const motivo = await perguntar('Por que ' + m.nome + ' não se aplica a ' + l.funcao + '? (vai para a AET' + (m.exig === 'PGR' ? ' e para o relatório de revisão do PGR' : '') + ')');
+      const motivo = await perguntar('Por que ' + m.nome + ' não se aplica a ' + l.funcao + '? (vai para a AET' + (m.exig === 'PGR' ? ' e para o relatório de revisão do PGR' : '') + ')' + (perm('naDireto') ? '' : '. O administrador valida antes de gerar a AET.'));
       if (motivo === null || motivo === undefined) return;
       if (String(motivo).trim().length < 5) { toast('Escreva o motivo com um pouco mais de detalhe.'); return; }
       await decidir(l, m, 'NA', motivo.trim());
@@ -1303,7 +1547,7 @@ async function telaPlano(app) {
     try {
       const j = await api({ acao: 'plano-decidir', filial: fil, secao: l.secao, funcao: l.funcao, metodo: m.cod, decisao, motivo, avaliador: S.ajustes.avaliador || '' }, 60000);
       P = Object.assign(j.plano, { baixadoEm: agoraIso() }); await DB.kvSet(chave, P);
-      toast(decisao === 'NA' ? 'Registrado: não se aplica.' : decisao === 'INCLUIR' ? 'Método incluído no plano.' : 'Decisão desfeita.');
+      toast(decisao === 'NA' ? (j.aguardando ? 'Enviado para a validação do administrador.' : 'Registrado: não se aplica.') : decisao === 'INCLUIR' ? 'Método incluído no plano.' : 'Decisão desfeita.');
       desenhar();
     } catch (e) { toast(e.message, 7000); }
   }
@@ -2154,7 +2398,7 @@ async function funcionariosLocais(filial) {
   return S.func[filial];
 }
 async function baixarFuncionarios(filial, manual, forcar) {
-  if (!filial || !S.ajustes.url || !S.ajustes.chave || !navigator.onLine) { if (manual) toast('Sem internet ou servidor não configurado.'); return null; }
+  if (!filial || !conectado() || !navigator.onLine) { if (manual) toast('Sem internet ou servidor não configurado.'); return null; }
   const atual = await funcionariosLocais(filial);
   if (!manual && !forcar && atual && Date.now() - new Date(atual.baixadoEm).getTime() < 6 * 3600000) return atual;
   try {
@@ -2706,7 +2950,7 @@ async function iniciar() {
   }
   atualizarStatus();
   rotear();
-  if (navigator.onLine && S.ajustes.url && S.ajustes.chave) {
+  if (navigator.onLine && conectado()) {
     const idade = S.cfg ? Date.now() - new Date(S.cfg.geradoEm).getTime() : Infinity;
     const versaoAnterior = await DB.kvGet('versaoApp');
     if (idade > 3600000 || versaoAnterior !== VERSAO_APP) {

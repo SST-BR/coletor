@@ -342,3 +342,12 @@ label.bt input[type=file] { display: none; }
 .aviso-txt { color: var(--alerta-txt); background: var(--alerta-bg); border-radius: 8px; padding: 4px 8px; }
 .col-bts { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .linha-periodo { margin: 10px 0; }
+
+/* ===== Login, usuários e validação ===== */
+.pm.st-aguard { border-color: var(--g5b); border-style: dashed; color: var(--sub); }
+.pm.st-aguard span::before { content: '⏳ '; }
+.validar .item-validar { border-top: 1px solid var(--borda); padding-top: 8px; margin-top: 8px; }
+.validar .item-validar small { display: block; color: var(--sub); }
+.codigo-grande { font-size: 30px; font-weight: 700; letter-spacing: 3px; text-align: center; margin: 12px 0; font-family: ui-monospace, monospace; }
+.col-fil { max-height: 180px; overflow: auto; border: 1px solid var(--borda); border-radius: 8px; padding: 6px 8px; }
+.usuario.inativo { opacity: .7; }
