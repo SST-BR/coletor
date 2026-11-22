@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.4.0';
+const VERSAO_APP = '1.5.0';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -57,7 +57,8 @@ const DB = (() => {
     del: (st, k) => op(st, 'readwrite', s => s.delete(k), m => { m.delete(k); }),
     all: st => op(st, 'readonly', s => s.getAll(), m => [...m.values()]),
     kvGet: async k => { const r = await DB.get('kv', k); return r ? r.v : undefined; },
-    kvSet: (k, v) => DB.put('kv', { k, v })
+    kvSet: (k, v) => DB.put('kv', { k, v }),
+    kvKeys: async () => (await DB.all('kv')).map(x => x.k)
   };
   return DB;
 })();
@@ -621,7 +622,7 @@ function telaInicio(app) {
   const selFil = h('select', { class: 'inp', onchange: async e => {
     let v = e.target.value;
     if (v === '__outra') { v = await perguntar('Código da filial:'); if (!v) { e.target.value = S.ctx.filial; return; } }
-    S.ctx.filial = v; await DB.kvSet('ctx', S.ctx); rotear(); sincronizar(false);
+    S.ctx.filial = v; await DB.kvSet('ctx', S.ctx); rotear(); sincronizar(false); baixarFuncionarios(v, false);
   } }, h('option', { value: '', text: 'Escolha a filial' }),
     filiais().map(f => h('option', { value: f.codigo, text: f.codigo + ' - ' + (f.nome || f.bandeira) + (f.cidade ? ' (' + f.cidade + ')' : '') })),
     (S.ctx.filial && !filialInfo(S.ctx.filial)) ? h('option', { value: S.ctx.filial, text: S.ctx.filial }) : null,
@@ -811,6 +812,27 @@ async function telaAjustes(app) {
       } }),
       h('button', { class: 'bt', text: 'Baixar formulários', onclick: async () => { await salvar(); if (await baixarConfig(false)) location.hash = '#/'; } }))));
 
+  // Dados da filial: QL e funcionários
+  const fLocal = S.ctx.filial ? await funcionariosLocais(S.ctx.filial) : null;
+  const inpQL = h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('QL', e.target.files[0]); e.target.value = ''; } });
+  const inpFu = h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('FUNC', e.target.files[0]); e.target.value = ''; } });
+  app.appendChild(h('div', { class: 'cartao' },
+    h('h3', { text: 'Dados da filial' }),
+    h('p', { class: 'peq', text: 'Envie o arquivo CSV exportado do sistema. Antes de gravar aparece um resumo do que muda, e só a filial escolhida (ou as filiais do arquivo) é trocada.' }),
+    h('p', { class: 'peq', text: 'Quadro de lotação: colunas FILIAL, DESC_SECAO, NOME_FUNCAO e ALOCADOS (as mesmas do QL que já usa). Funcionários: REGIONAL, BANDEIRA, FILIAL, NOME, FUNÇÃO, SEÇÃO e MATRICULA.' }),
+    h('div', { class: 'linha-bts' },
+      h('label', { class: 'bt sec' }, '📊 Atualizar QL (CSV)', inpQL),
+      h('label', { class: 'bt sec' }, '👥 Atualizar funcionários (CSV)', inpFu),
+      h('label', { class: 'bt sec' }, '📋 Atualizar descrições das funções (CSV)', h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('DESC', e.target.files[0]); e.target.value = ''; } }))),
+    h('p', { class: 'peq', text: 'Descrições das funções (do PGR) no app: ' + (((S.cfg && S.cfg.listas && S.cfg.listas.descricoes) || []).length) + '. Elas preenchem a "Tarefa prescrita" ao escolher a função.' }),
+    h('p', { class: 'peq', text: S.ctx.filial ? ('Funcionários da filial ' + S.ctx.filial + ' neste aparelho: ' + (fLocal && fLocal.lista ? fLocal.lista.length + ' (baixado ' + dataHoraBr(fLocal.baixadoEm) + ')' : 'nenhum')) : 'Escolha a filial na tela inicial.' }),
+    h('div', { class: 'linha-bts' },
+      S.ctx.filial ? h('button', { class: 'bt sec', text: 'Baixar lista de funcionários', onclick: async () => { await baixarFuncionarios(S.ctx.filial, true); rotear(); } }) : null,
+      h('button', { class: 'bt perigo', text: 'Apagar listas de funcionários deste aparelho', onclick: async () => {
+        if (!(await confirmar('Apagar deste aparelho as listas de funcionários baixadas? Os registros e assinaturas não são apagados.', 'Apagar'))) return;
+        await apagarFuncionariosLocais(); toast('Listas apagadas deste aparelho.'); rotear();
+      } }))));
+
   // Aparência (modo escuro)
   const temaAtual = S.ajustes.tema || 'auto';
   const chipsTema = chips(['Claro', 'Escuro', 'Automático'], { claro: 'Claro', escuro: 'Escuro', auto: 'Automático' }[temaAtual], false, async v => {
@@ -966,7 +988,16 @@ async function telaDocumentos(app) {
     // Gerar
     caixaGerar.innerHTML = '';
     caixaGerar.appendChild(h('h3', { text: 'Gerar' }));
-    caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => gerar({ tipo: 'AET' }) }));
+    const inpEmissao = h('input', { class: 'inp curto-data', type: 'date', value: hojeIso(), max: hojeIso() });
+    caixaGerar.appendChild(h('div', { class: 'linha-emissao' }, h('label', { class: 'rot', text: 'Data de emissão do documento' }), inpEmissao,
+      h('p', { class: 'peq', text: 'Vai na capa, na identificação e na assinatura. O período do levantamento continua sendo o das visitas registradas.' })));
+    const emissao = () => {
+      const v = inpEmissao.value;
+      if (!v) return hojeIso();
+      if (v > hojeIso()) { toast('A data de emissão não pode ser futura.'); return null; }
+      return v;
+    };
+    caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d) gerar({ tipo: 'AET', dataEmissao: d }); } }));
     const secoes = (dados && dados.secoes && dados.secoes.length) ? dados.secoes : secoesDe(fil);
     const selSec = h('select', { class: 'inp' }, h('option', { value: '', text: 'Escolha a seção' }), secoes.map(x => h('option', { value: x, text: x })));
     const recortes = (dados && dados.recortes) || ['Completo', 'Ergonomia', 'Conforto ambiental', 'Não conformidades e plano de ação'];
@@ -975,7 +1006,8 @@ async function telaDocumentos(app) {
     caixaGerar.appendChild(h('div', { class: 'linha-sel' }, selSec, selRec));
     caixaGerar.appendChild(h('button', { class: 'bt sec larga', text: 'Gerar relatório da seção', onclick: () => {
       if (!selSec.value) { toast('Escolha a seção.'); return; }
-      gerar({ tipo: 'SECAO', secao: selSec.value, recorte: Number(selRec.value) });
+      const d = emissao(); if (!d) return;
+      gerar({ tipo: 'SECAO', secao: selSec.value, recorte: Number(selRec.value), dataEmissao: d });
     } }));
     caixaGerar.appendChild(h('p', { class: 'peq', text: 'Antes de gerar, o app envia o que estiver pendente neste aparelho. A geração leva de 1 a 3 minutos.' }));
 
@@ -1231,6 +1263,7 @@ async function telaRegistro(app, id) {
       const g = gheDe(reg.filial, reg.secao, reg.funcao);
       if (g) { reg.ghe = g; inpGhe.value = g; }
       encherFuncoes(); mostrarInfo(); alterou();
+      preencherDoPGR(S.editor);
     });
     encherFuncoes(); mostrarInfo();
     cartaoCtx.appendChild(h('label', { class: 'rot', text: 'Seção' }));
@@ -1352,14 +1385,31 @@ function chips(opcoes, valor, multi, aoMudar) {
 
 const CONTROLES = {
   texto(c, esc) {
-    return h('input', { class: 'inp', value: esc[c.id] || '', oninput: e => { esc[c.id] = e.target.value; alterou(); } });
+    const inp = h('input', { class: 'inp', value: esc[c.id] || '', 'data-campo': c.id, oninput: e => { esc[c.id] = e.target.value; alterou(); } });
+    if (!c.buscaFuncionario) return inp;
+    return h('div', { class: 'linha-inp' }, inp, h('button', { type: 'button', class: 'bt sec thumb', text: '🔍 Relação', title: 'Buscar na relação de funcionários da filial', onclick: async () => {
+      const r = await escolherFuncionarios(S.editor.reg.filial, false);
+      if (!r || !r[0]) return;
+      esc[c.id] = r[0].n; inp.value = r[0].n;
+      const cm = c.buscaFuncionario.matricula;
+      if (cm) { esc[cm] = r[0].m || ''; const im = document.querySelector('[data-campo="' + cm + '"]'); if (im) im.value = r[0].m || ''; }
+      alterou(); toast('Preenchido: ' + r[0].n + (r[0].f ? ' (' + r[0].f + ')' : ''));
+    } }));
   },
   textolongo(c, esc) {
-    const t = h('textarea', { class: 'inp', rows: 3, oninput: e => { esc[c.id] = e.target.value; ajusta(); alterou(); } });
+    const t = h('textarea', { class: 'inp', rows: 3, 'data-campo': c.id, oninput: e => { esc[c.id] = e.target.value; ajusta(); alterou(); } });
     t.value = esc[c.id] || '';
     function ajusta() { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 420) + 'px'; }
+    t.addEventListener('ajustar', ajusta);
     setTimeout(ajusta, 0);
-    return t;
+    if (!c.doPGR) return t;
+    return h('div', null, t, h('button', { type: 'button', class: 'bt sec pequeno bt-pgr', text: '📋 Usar descrição do PGR', onclick: async () => {
+      const r = S.editor && S.editor.reg;
+      const d = r ? descricaoPGR(r.secao, r.funcao) : '';
+      if (!d) { toast(r && r.funcao ? 'Não há descrição no PGR para ' + r.funcao + '.' : 'Escolha a seção e a função primeiro.'); return; }
+      if (esc[c.id] && esc[c.id] !== d && !(await confirmar('Trocar o texto atual pela descrição do PGR?', 'Trocar'))) return;
+      esc[c.id] = d; t.value = d; ajusta(); alterou();
+    } }));
   },
   numero(c, esc) {
     return h('input', { class: 'inp', inputmode: 'decimal', value: mostraNum(esc[c.id]), oninput: e => {
@@ -1370,7 +1420,7 @@ const CONTROLES = {
     } });
   },
   inteiro(c, esc) {
-    return h('input', { class: 'inp', inputmode: 'numeric', value: mostraNum(esc[c.id]), oninput: e => {
+    return h('input', { class: 'inp', inputmode: 'numeric', 'data-campo': c.id, value: mostraNum(esc[c.id]), oninput: e => {
       const s = e.target.value.trim(); const n = parseInt(s, 10);
       esc[c.id] = s === '' ? '' : (isNaN(n) ? s : n);
       e.target.classList.toggle('erro', s !== '' && (isNaN(n) || (c.min !== undefined && n < c.min) || (c.max !== undefined && n > c.max)));
@@ -1766,18 +1816,9 @@ function controleAudio(c, esc, path) {
 }
 
 /* ------------------------------- assinatura ------------------------------- */
-function controleAssinatura(c, esc, path) {
-  const reg = S.editor.reg;
-  const prev = h('div', { class: 'assin-prev' });
-  async function desenhar() {
-    prev.innerHTML = '';
-    if (esc[c.id]) {
-      const a = reg.anexos.find(x => x.id === esc[c.id]);
-      const u = a && !a.removidoLocal ? await urlDoAnexo(a.id) : null;
-      if (u) prev.appendChild(h('img', { src: u, alt: 'assinatura' })); else prev.appendChild(h('span', { class: 'peq', text: 'Assinatura registrada' }));
-    }
-  }
-  const bt = h('button', { type: 'button', class: 'bt', text: 'Coletar assinatura', onclick: () => {
+/** Abre o quadro de assinatura em tela cheia. Devolve a imagem (PNG) ou null se cancelar. */
+function coletarAssinatura(titulo, subtitulo) {
+  return new Promise(resolve => {
     const cv = h('canvas', { class: 'assin-cv' });
     let fechar, desenhando = false, tem = false, g;
     const ajustar = () => {
@@ -1792,18 +1833,36 @@ function controleAssinatura(c, esc, path) {
     cv.addEventListener('pointermove', e => { if (!desenhando || !g) return; const [x, y] = pos(e); g.lineTo(x, y); g.stroke(); });
     cv.addEventListener('pointerup', () => { desenhando = false; });
     fechar = modal(h('div', { class: 'assin-box' },
-      h('p', { class: 'peq', text: 'Assine dentro do quadro.' }), cv,
+      h('p', { class: 'assin-tit', text: titulo }), subtitulo ? h('p', { class: 'peq', text: subtitulo }) : null, cv,
       h('div', { class: 'linha-bts' },
         h('button', { class: 'bt sec', text: 'Limpar', onclick: () => { ajustar(); tem = false; } }),
-        h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => fechar() }),
+        h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => { fechar(); resolve(null); } }),
         h('button', { class: 'bt', text: 'Confirmar', onclick: async () => {
           if (!tem) { toast('Assinatura em branco.'); return; }
           const blob = await new Promise(r => cv.toBlob(r, 'image/png'));
-          if (esc[c.id]) await removerAnexo(reg, esc[c.id]);
-          const a = await adicionarAnexo(reg, path, c, blob, 'assinatura', 'png');
-          esc[c.id] = a.id; alterou(); await salvarEditorAgora(); fechar(); desenhar();
+          fechar(); resolve(blob);
         } }))), { cheio: true });
     setTimeout(ajustar, 30);
+  });
+}
+
+function controleAssinatura(c, esc, path) {
+  const reg = S.editor.reg;
+  const prev = h('div', { class: 'assin-prev' });
+  async function desenhar() {
+    prev.innerHTML = '';
+    if (esc[c.id]) {
+      const a = reg.anexos.find(x => x.id === esc[c.id]);
+      const u = a && !a.removidoLocal ? await urlDoAnexo(a.id) : null;
+      if (u) prev.appendChild(h('img', { src: u, alt: 'assinatura' })); else prev.appendChild(h('span', { class: 'peq', text: 'Assinatura registrada' }));
+    }
+  }
+  const bt = h('button', { type: 'button', class: 'bt', text: 'Coletar assinatura', onclick: async () => {
+    const blob = await coletarAssinatura('Assine dentro do quadro.');
+    if (!blob) return;
+    if (esc[c.id]) await removerAnexo(reg, esc[c.id]);
+    const a = await adicionarAnexo(reg, path, c, blob, 'assinatura', 'png');
+    esc[c.id] = a.id; alterou(); await salvarEditorAgora(); desenhar();
   } });
   desenhar();
   return h('div', null, prev, bt);
@@ -1854,6 +1913,275 @@ function controleCronometro(c, esc) {
 }
 
 /* ================================ INÍCIO ================================ */
+/* ==================== DESCRIÇÃO DAS FUNÇÕES (do PGR) ==================== */
+function descricaoPGR(secao, funcao) {
+  const L = (S.cfg && S.cfg.listas && S.cfg.listas.descricoes) || [];
+  if (!funcao || !L.length) return '';
+  const fs = semAcento(funcao).trim(), ss = semAcento(secao).trim();
+  const exato = L.find(x => semAcento(x[1]).trim() === fs && semAcento(x[0]).trim() === ss);
+  if (exato) return exato[2];
+  const soFuncao = L.find(x => semAcento(x[1]).trim() === fs);
+  return soFuncao ? soFuncao[2] : '';
+}
+/** Ao escolher a função: preenche os campos marcados doPGR que estiverem vazios. */
+function preencherDoPGR(E) {
+  if (!E || !E.f) return;
+  const d = descricaoPGR(E.reg.secao, E.reg.funcao);
+  if (!d) return;
+  let n = 0;
+  E.f.campos.filter(c => c.doPGR).forEach(c => {
+    if (E.reg.valores[c.id]) return;
+    E.reg.valores[c.id] = d; n++;
+    const t = document.querySelector('[data-campo="' + c.id + '"]');
+    if (t) { t.value = d; t.dispatchEvent(new Event('ajustar')); }
+  });
+  if (n) { alterou(); toast('Tarefa prescrita preenchida com a descrição do PGR. Pode editar.'); }
+}
+
+/* ==================== FUNCIONÁRIOS DA FILIAL (dado pessoal) ==================== */
+// Lista guardada só neste aparelho, por filial: [[matrícula, nome, seção, função], ...]
+S.func = {};
+async function funcionariosLocais(filial) {
+  if (!filial) return null;
+  if (!S.func[filial]) S.func[filial] = (await DB.kvGet('func:' + filial)) || null;
+  return S.func[filial];
+}
+async function baixarFuncionarios(filial, manual, forcar) {
+  if (!filial || !S.ajustes.url || !S.ajustes.chave || !navigator.onLine) { if (manual) toast('Sem internet ou servidor não configurado.'); return null; }
+  const atual = await funcionariosLocais(filial);
+  if (!manual && !forcar && atual && Date.now() - new Date(atual.baixadoEm).getTime() < 6 * 3600000) return atual;
+  try {
+    const j = await api({ acao: 'funcionarios', filial }, 90000);
+    const o = { lista: j.lista || [], atualizadoEm: j.atualizadoEm || '', baixadoEm: agoraIso() };
+    S.func[filial] = o; await DB.kvSet('func:' + filial, o);
+    if (manual) toast(o.lista.length ? o.lista.length + ' funcionário(s) da filial ' + filial + ' neste aparelho.' : 'O servidor ainda não tem a lista de funcionários da filial ' + filial + '. Envie em Ajustes > Dados da filial.', 6000);
+    return o;
+  } catch (e) { if (manual) toast(e.message, 6000); return atual; }
+}
+async function apagarFuncionariosLocais() {
+  for (const k of Object.keys(S.func)) delete S.func[k];
+  const chaves = (await DB.kvKeys()).filter(k => String(k).startsWith('func:'));
+  for (const k of chaves) await DB.del('kv', k);
+}
+function semAcento(t) { return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase(); }
+
+/** Janela de busca na relação de funcionários. Devolve [{m, n, s, f}] escolhidos (multi) ou um item. */
+async function escolherFuncionarios(filial, multi, jaEscolhidos) {
+  let o = await funcionariosLocais(filial);
+  if (!o || !o.lista.length) o = await baixarFuncionarios(filial, false);
+  const lista = (o && o.lista) || [];
+  return new Promise(resolve => {
+    const marcados = new Map();
+    const ja = new Set((jaEscolhidos || []).map(p => p.m || p.n));
+    const busca = h('input', { class: 'inp', placeholder: 'Buscar por nome ou matrícula', autocomplete: 'off' });
+    const secoes = [...new Set(lista.map(x => x[2]).filter(Boolean))].sort();
+    const selSec = h('select', { class: 'inp' }, h('option', { value: '', text: 'Todas as seções' }), secoes.map(x => h('option', { value: x, text: x })));
+    const res = h('div', { class: 'func-res' });
+    const cont = h('span', { class: 'peq' });
+    const btSecao = h('button', { class: 'bt sec pequeno', text: 'Marcar todos da seção', hidden: true, onclick: () => { lista.filter(x => x[2] === selSec.value && !ja.has(x[0] || x[1])).forEach(x => marcados.set(x[0] + '|' + x[1], x)); desenhar(); } });
+    function desenhar() {
+      res.innerHTML = '';
+      const q = semAcento(busca.value).trim();
+      const itens = lista.filter(x => (!selSec.value || x[2] === selSec.value) && (!q || semAcento(x[1]).includes(q) || String(x[0]).includes(q))).slice(0, 80);
+      if (!lista.length) res.appendChild(h('p', { class: 'peq', text: 'A relação de funcionários desta filial não está no aparelho. Envie o arquivo em Ajustes > Dados da filial, ou use "Adicionar nome manualmente".' }));
+      else if (!itens.length) res.appendChild(h('p', { class: 'peq', text: 'Nenhum funcionário encontrado.' }));
+      itens.forEach(x => {
+        const k = x[0] + '|' + x[1], jaTem = ja.has(x[0] || x[1]);
+        res.appendChild(h('button', { type: 'button', class: 'func-item' + (marcados.has(k) ? ' on' : '') + (jaTem ? ' ja' : ''), disabled: jaTem, onclick: () => {
+          if (!multi) { fechar(); resolve([{ m: x[0], n: x[1], s: x[2], f: x[3] }]); return; }
+          if (marcados.has(k)) marcados.delete(k); else marcados.set(k, x); desenhar();
+        } }, h('span', { class: 'fi-chk', text: jaTem ? '✓' : marcados.has(k) ? '✓' : '' }),
+          h('span', { class: 'fi-txt' }, h('strong', { text: x[1] }), h('small', { text: [x[0] ? 'Mat. ' + x[0] : '', x[3], x[2]].filter(Boolean).join(' · ') + (jaTem ? ' · já na lista' : '') }))));
+      });
+      cont.textContent = multi ? marcados.size + ' marcado(s)' : '';
+      btSecao.hidden = !multi || !selSec.value;
+    }
+    busca.addEventListener('input', desenhar); selSec.addEventListener('change', desenhar);
+    const manual = h('button', { class: 'bt sec', text: '+ Adicionar nome manualmente', onclick: async () => {
+      const n = await perguntar('Nome completo:'); if (!n) return;
+      const m = await perguntar('Matrícula (opcional):');
+      fechar(); resolve([...marcados.values()].map(x => ({ m: x[0], n: x[1], s: x[2], f: x[3] })).concat([{ m: (m || '').trim(), n: n.toUpperCase(), s: '', f: '', manual: true }]));
+    } });
+    const fechar = modal(h('div', { class: 'func-box' },
+      h('h3', { text: multi ? 'Escolher participantes' : 'Escolher funcionário' }),
+      h('p', { class: 'peq', text: lista.length ? lista.length + ' funcionário(s) da filial ' + filial + (o && o.atualizadoEm ? ' · lista de ' + o.atualizadoEm : '') : '' }),
+      h('div', { class: 'func-filtros' }, busca, selSec), btSecao, res,
+      h('div', { class: 'linha-bts' }, manual,
+        h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => { fechar(); resolve(null); } }),
+        multi ? h('button', { class: 'bt', text: 'Adicionar', onclick: () => { fechar(); resolve([...marcados.values()].map(x => ({ m: x[0], n: x[1], s: x[2], f: x[3] }))); } }) : null),
+      multi ? cont : null), { cheio: true });
+    desenhar();
+    setTimeout(() => busca.focus(), 60);
+  });
+}
+
+/* ============================ LISTA DE PRESENÇA ============================ */
+CONTROLES.presenca = function (c, esc, path) {
+  const E = S.editor, reg = E.reg;
+  const box = h('div', { class: 'presenca' });
+  const lista = () => (Array.isArray(esc[c.id]) ? esc[c.id] : []);
+  function atualizarContagem() {
+    const l = lista();
+    if (c.conta) { esc[c.conta] = l.length || ''; const inp = document.querySelector('[data-campo="' + c.conta + '"]'); if (inp) inp.value = l.length || ''; }
+    if (c.funcoesEm && l.length) {
+      const cont = {}; l.forEach(p => { if (p.f) cont[p.f] = (cont[p.f] || 0) + 1; });
+      const txt = Object.keys(cont).sort().map(k => k + ' (' + cont[k] + ')').join('; ');
+      if (txt && (!esc[c.funcoesEm] || esc._funcoesAuto === esc[c.funcoesEm])) {
+        esc[c.funcoesEm] = txt; esc._funcoesAuto = txt;
+        const t = document.querySelector('[data-campo="' + c.funcoesEm + '"]'); if (t) t.value = txt;
+      }
+    }
+  }
+  async function assinar(p) {
+    const blob = await coletarAssinatura(p.n, [p.m ? 'Matrícula ' + p.m : '', p.f].filter(Boolean).join(' · ') + ' - assine dentro do quadro.');
+    if (!blob) return;
+    if (p.ass) await removerAnexo(reg, p.ass);
+    const a = await adicionarAnexo(reg, path, c, blob, 'assinatura ' + p.n, 'png');
+    p.ass = a.id; p.em = agoraIso();
+    alterou(); await salvarEditorAgora(); desenhar();
+  }
+  function desenhar() {
+    box.innerHTML = '';
+    const l = lista(), nAss = l.filter(p => p.ass).length;
+    box.appendChild(h('div', { class: 'pres-cab' },
+      h('strong', { text: l.length + ' participante(s)' }), l.length ? h('span', { class: 'peq', text: ' · ' + nAss + ' assinaram no aparelho' }) : null));
+    const ul = h('div', { class: 'pres-lista' });
+    l.forEach((p, i) => ul.appendChild(h('div', { class: 'pres-item' + (p.ass ? ' ok' : '') },
+      h('span', { class: 'pres-n', text: String(i + 1) }),
+      h('div', { class: 'pres-txt' }, h('strong', { text: p.n }), h('small', { text: [p.m ? 'Mat. ' + p.m : '', p.f, p.s].filter(Boolean).join(' · ') + (p.ass ? ' · assinou ' + dataHoraBr(p.em) : '') })),
+      h('button', { type: 'button', class: 'bt pequeno' + (p.ass ? ' sec' : ''), text: p.ass ? 'Refazer' : '✍ Assinar', onclick: () => assinar(p) }),
+      h('button', { type: 'button', class: 'bt perigo pequeno', title: 'Tirar da lista', text: '×', onclick: async () => {
+        if (p.ass && !(await confirmar('Tirar ' + p.n + ' da lista? A assinatura dele também sai.', 'Tirar'))) return;
+        if (p.ass) await removerAnexo(reg, p.ass);
+        esc[c.id] = lista().filter(x => x !== p); atualizarContagem(); alterou(); desenhar();
+      } }))));
+    box.appendChild(ul);
+    box.appendChild(h('div', { class: 'linha-bts' },
+      h('button', { type: 'button', class: 'bt sec', text: '+ Escolher participantes', onclick: async () => {
+        const novos = await escolherFuncionarios(reg.filial, true, lista());
+        if (!novos || !novos.length) return;
+        esc[c.id] = lista().concat(novos.map(x => Object.assign({ ass: '', em: '' }, x)));
+        atualizarContagem(); alterou(); desenhar();
+      } }),
+      l.length ? h('button', { type: 'button', class: 'bt sec', text: '🖨 Imprimir lista para assinar', onclick: () => imprimirLista(reg, c, false) }) : null,
+      nAss ? h('button', { type: 'button', class: 'bt', text: '📄 Gerar PDF da lista assinada', onclick: () => gerarPdfLista(reg) }) : null));
+    if (l.length) box.appendChild(h('p', { class: 'peq', text: 'Papel: imprima, colete as assinaturas e fotografe a lista no campo "Lista de presença assinada em papel". Aparelho: toque em Assinar ao lado de cada nome e passe o aparelho para a pessoa; no fim, gere o PDF.' }));
+  }
+  desenhar();
+  return box;
+};
+
+function escHtml(t) { return String(t === undefined || t === null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+/** Lista para imprimir (funciona sem internet). comAss: inclui as assinaturas já coletadas no aparelho. */
+async function imprimirLista(reg, c, comAss) {
+  await salvarEditorAgora();
+  const v = reg.valores || {}, l = Array.isArray(v[c.id]) ? v[c.id] : [];
+  const fi = filialInfo(reg.filial) || {};
+  const linhas = [];
+  for (let i = 0; i < l.length; i++) {
+    const p = l[i];
+    let ass = '';
+    if (comAss && p.ass) { const u = await urlDoAnexo(p.ass); if (u) ass = '<img src="' + u + '">'; }
+    linhas.push('<tr><td class="c">' + (i + 1) + '</td><td>' + escHtml(p.n) + '</td><td class="c">' + escHtml(p.m || '') + '</td><td>' + escHtml(p.f || '') + '</td><td class="ass">' + ass + '</td></tr>');
+  }
+  for (let i = 0; i < 3; i++) linhas.push('<tr><td class="c">' + (l.length + i + 1) + '</td><td></td><td></td><td></td><td class="ass"></td></tr>');
+  const area = h('div', { id: 'impressao' });
+  area.innerHTML = '<h1>LISTA DE PRESENÇA</h1><h2>' + escHtml(v.tipo || 'Reunião') + '</h2>' +
+    '<table class="cab"><tr><td><b>Unidade:</b> ' + escHtml((fi.bandeira || fi.nome || '') + ' - filial ' + reg.filial) + '</td><td><b>Data:</b> ' + escHtml(isoParaBr(v.data) || '___/___/______') + '</td><td><b>Horário:</b> ' + escHtml(v.hora || '') + '</td></tr>' +
+    '<tr><td><b>Local:</b> ' + escHtml(v.local || '') + '</td><td colspan="2"><b>Conduzido por:</b> ' + escHtml(reg.avaliador || '') + '</td></tr>' +
+    (v.pauta ? '<tr><td colspan="3"><b>Pauta:</b> ' + escHtml(v.pauta) + '</td></tr>' : '') + '</table>' +
+    '<table class="lst"><thead><tr><th>Nº</th><th>Nome</th><th>Matrícula</th><th>Função</th><th>Assinatura</th></tr></thead><tbody>' + linhas.join('') + '</tbody></table>' +
+    '<p class="rod">Declaro que participei da atividade acima. Lista gerada pelo Coletor de Campo em ' + escHtml(dataHoraBr(agoraIso())) + ' · registro ' + escHtml(reg.id.slice(0, 8)) + '</p>' +
+    '<div class="ass-cond"><div>_______________________________________<br>' + escHtml(reg.avaliador || 'Responsável') + '<br>Responsável pela atividade</div></div>';
+  document.body.appendChild(area);
+  document.body.classList.add('imprimindo');
+  const limpar = () => { area.remove(); document.body.classList.remove('imprimindo'); window.removeEventListener('afterprint', limpar); };
+  window.addEventListener('afterprint', limpar);
+  setTimeout(() => { window.print(); setTimeout(() => { if (document.body.classList.contains('imprimindo')) limpar(); }, 1500); }, 200);
+}
+
+/** PDF da lista assinada no aparelho: envia as assinaturas e o servidor monta o PDF com código de verificação. */
+async function gerarPdfLista(reg) {
+  if (!navigator.onLine) { toast('Precisa de internet para gerar o PDF. As assinaturas estão guardadas neste aparelho. Sem internet, use "Imprimir lista".', 7000); return; }
+  await salvarEditorAgora();
+  const fechar = modal(h('div', null, h('div', { class: 'girando' }), h('p', { class: 'modal-txt', text: 'Enviando assinaturas e gerando o PDF...' })), { semFechar: true });
+  try {
+    await sincronizar(false);
+    const r = S.regs.get(reg.id);
+    if (r && pendente(r)) throw new Error('As assinaturas ainda não foram enviadas. Confira a internet e tente de novo.');
+    const j = await api({ acao: 'lista-presenca', registroId: reg.id }, 240000);
+    fechar();
+    const bytes = Uint8Array.from(atob(j.base64), ch => ch.charCodeAt(0));
+    const arq = new File([bytes], j.nome, { type: j.mime });
+    let fim;
+    fim = modal(h('div', null,
+      h('h3', { text: 'Lista de presença gerada' }),
+      h('p', { class: 'modal-txt', text: j.mensagem }),
+      h('p', { class: 'peq', text: 'Código de verificação: ' + j.codigo }),
+      h('div', { class: 'linha-bts' },
+        h('button', { class: 'bt', text: 'Compartilhar / salvar', onclick: async () => {
+          try {
+            if (navigator.canShare && navigator.canShare({ files: [arq] })) await navigator.share({ files: [arq], title: arq.name });
+            else { const u = URL.createObjectURL(arq); const a = h('a', { href: u, download: arq.name }); document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 30000); toast('Arquivo salvo em Downloads.'); }
+          } catch (e) { if (e.name !== 'AbortError') toast(e.message); }
+        } }),
+        j.url ? h('a', { class: 'bt sec', href: j.url, target: '_blank', rel: 'noopener', text: 'Abrir no Drive' }) : null,
+        h('button', { class: 'bt sec', text: 'Fechar', onclick: () => fim() }))));
+  } catch (e) { fechar(); toast(e.message, 8000); }
+}
+
+/* ===================== IMPORTAR QL E FUNCIONÁRIOS (Ajustes) ===================== */
+async function lerTextoArquivo(arq) {
+  const buf = await arq.arrayBuffer();
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf).replace(/^﻿/, ''); }
+  catch (e) { return new TextDecoder('windows-1252').decode(buf); }
+}
+async function importarArquivoFilial(tipo, arq) {
+  if (!arq) return;
+  if (!navigator.onLine) { toast('Precisa de internet para enviar o arquivo.'); return; }
+  const nomeTipo = tipo === 'QL' ? 'quadro de lotação (QL)' : tipo === 'DESC' ? 'descrições das funções' : 'lista de funcionários';
+  let espera = modal(h('div', null, h('div', { class: 'girando' }), h('p', { class: 'modal-txt', text: 'Lendo o arquivo...' })), { semFechar: true });
+  let texto;
+  try { texto = await lerTextoArquivo(arq); } catch (e) { espera(); toast('Não consegui ler o arquivo: ' + e.message); return; }
+  async function previa(soFilial) {
+    return api({ acao: 'importar', tipo, texto, filial: soFilial || '', aplicar: false }, 240000);
+  }
+  try {
+    const temFilial = !!S.ctx.filial && tipo !== 'DESC';
+    let soFilial = temFilial ? S.ctx.filial : '';
+    let j;
+    try { j = await previa(soFilial); }
+    catch (e) { if (soFilial && /não tem linhas da filial/.test(e.message)) { soFilial = ''; j = await previa(''); } else throw e; }
+    espera();
+    const resumoTxt = r => tipo === 'DESC' ? 'Descrições: ' + r.antes + ' → ' + r.depois + ' (a tabela inteira é trocada)' : tipo === 'QL'
+      ? 'Filial ' + r.filial + ': ' + r.linhasAntes + ' → ' + r.linhasDepois + ' funções; trabalhadores ' + r.totalAntes + ' → ' + r.totalDepois +
+        (r.novas.length ? '. Novas: ' + r.novas.slice(0, 8).join('; ') + (r.novas.length > 8 ? '...' : '') : '') + (r.removidas.length ? '. Saem: ' + r.removidas.slice(0, 8).join('; ') + (r.removidas.length > 8 ? '...' : '') : '')
+      : 'Filial ' + r.filial + ': ' + r.antes + ' → ' + r.depois + ' funcionários (' + r.entraram + ' entram, ' + r.sairam + ' saem; ' + r.secoes + ' seções)';
+    const escolha = await new Promise(resolve => {
+      let f;
+      const caixa = h('div', null,
+        h('h3', { text: 'Atualizar ' + nomeTipo }),
+        h('p', { class: 'peq', text: 'Arquivo: ' + arq.name + (tipo === 'DESC' ? '' : ' · ' + j.filiaisNoArquivo + ' filial(is) no arquivo.') }),
+        h('ul', { class: 'imp-resumo' }, j.resumo.slice(0, 12).map(r => h('li', { text: resumoTxt(r) }))),
+        j.resumo.length > 12 ? h('p', { class: 'peq', text: '... e mais ' + (j.resumo.length - 12) + ' filial(is).' }) : null,
+        tipo === 'DESC' ? null : h('p', { class: 'peq', text: soFilial ? 'Só a filial ' + soFilial + ' será trocada; as outras continuam como estão.' : 'As filiais do arquivo serão trocadas; as que não estão no arquivo continuam como estão.' }),
+        h('div', { class: 'linha-bts' },
+          h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => { f(); resolve(null); } }),
+          soFilial && j.filiaisNoArquivo > 1 ? h('button', { class: 'bt sec', text: 'Aplicar a todas as ' + j.filiaisNoArquivo + ' filiais', onclick: () => { f(); resolve('todas'); } }) : null,
+          h('button', { class: 'bt', text: soFilial ? 'Aplicar à filial ' + soFilial : 'Aplicar', onclick: () => { f(); resolve(soFilial || 'todas'); } })));
+      f = modal(caixa, { semFechar: true });
+    });
+    if (!escolha) return;
+    espera = modal(h('div', null, h('div', { class: 'girando' }), h('p', { class: 'modal-txt', text: 'Gravando na planilha...' })), { semFechar: true });
+    const fim = await api({ acao: 'importar', tipo, texto, filial: escolha === 'todas' ? '' : escolha, aplicar: true }, 300000);
+    espera();
+    toast(tipo === 'DESC' ? 'Descrições das funções atualizadas: ' + fim.linhas + ' linha(s).' : (tipo === 'QL' ? 'QL atualizado' : 'Lista de funcionários atualizada') + ': ' + fim.linhas + ' linha(s) em ' + fim.filiais.length + ' filial(is).', 6000);
+    if (tipo === 'QL' || tipo === 'DESC') await baixarConfig(true); else if (S.ctx.filial) await baixarFuncionarios(S.ctx.filial, false, true);
+    rotear();
+  } catch (e) { try { espera(); } catch (x) { } toast(e.message, 9000); }
+}
+
 /* ======================= TEMA E EFEITO DE CLIQUE ======================= */
 function aplicarTema() {
   const t = S.ajustes.tema || 'auto';
@@ -1925,6 +2253,7 @@ async function iniciar() {
     const idade = S.cfg ? Date.now() - new Date(S.cfg.geradoEm).getTime() : Infinity;
     if (idade > 3600000) { await baixarConfig(true); if (!location.hash || location.hash === '#/') rotear(); }
     sincronizar(false);
+    if (S.ctx.filial) baixarFuncionarios(S.ctx.filial, false);
   }
 }
 
