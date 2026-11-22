@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.3.0';
+const VERSAO_APP = '1.4.0';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -239,6 +239,11 @@ async function novoRegistro(formId) {
   const f = form(formId);
   if (!f) return;
   if (!f.semFilial && !S.ctx.filial) { toast('Escolha a filial na tela inicial antes de começar.'); location.hash = '#/'; return; }
+  if (!S.ajustes.avaliador) {
+    const nome = await perguntar('Seu nome (aparece nos registros e mostra à equipe quem fez cada levantamento):');
+    if (!nome) return;
+    S.ajustes.avaliador = nome.trim().toUpperCase(); await DB.kvSet('ajustes', S.ajustes);
+  }
   const r = {
     id: uid(), form: f.id, filial: f.semFilial ? '' : S.ctx.filial, fase: f.semFilial ? '' : S.ctx.fase,
     secao: '', funcao: '', ghe: '', avaliador: S.ajustes.avaliador || '', status: 'rascunho',
@@ -575,7 +580,10 @@ function atualizarStatus() {
 function definirTopo(titulo, comVoltar) {
   $('#titulo').textContent = titulo;
   $('#voltar').hidden = !comVoltar;
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', location.hash.replace('#/', '').split('/')[0] === a.dataset.r || (a.dataset.r === 'inicio' && (location.hash === '' || location.hash === '#/'))));
+  const r0 = location.hash.replace('#/', '').split('/');
+  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', r0[0] === a.dataset.r || (a.dataset.r === 'inicio' && (location.hash === '' || location.hash === '#/'))
+    || (a.dataset.g !== undefined && r0[0] === 'g' && r0[1] === a.dataset.g)));
+  desenharNavGrupos();
 }
 
 async function pedirPersistencia() {
@@ -591,6 +599,7 @@ async function rotear() {
   const app = $('#app');
   app.innerHTML = '';
   window.scrollTo(0, 0);
+  if (rota[0] === 'g' && rota[1]) return telaGrupo(app, Number(rota[1]));
   if (rota[0] === 'f' && rota[1]) return telaFormulario(app, rota[1]);
   if (rota[0] === 'r' && rota[1]) return telaRegistro(app, rota[1]);
   if (rota[0] === 'registros') return telaRegistros(app);
@@ -621,28 +630,99 @@ function telaInicio(app) {
   const selFase = h('select', { class: 'inp', onchange: async e => { S.ctx.fase = e.target.value; await DB.kvSet('ctx', S.ctx); } },
     (S.cfg.fases || []).map(f => h('option', { value: f, text: f })));
   selFase.value = S.ctx.fase || '';
-  app.appendChild(h('div', { class: 'cartao' },
-    h('label', { class: 'rot', text: 'Filial' }), selFil,
-    h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros)' }), selFase));
+  app.appendChild(h('div', { class: 'cartao ctx-ini' },
+    h('div', null, h('label', { class: 'rot', text: 'Filial' }), selFil),
+    h('div', null, 
+h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros)' }), selFase)));
 
-  if (S.instalar) app.appendChild(h('button', { class: 'bt larga', text: 'Instalar o app neste celular', onclick: async () => { S.instalar.prompt(); S.instalar = null; rotear(); } }));
+  if (S.instalar) app.appendChild(h('button', { class: 'bt larga', text: 'Instalar o app neste aparelho', onclick: async () => { S.instalar.prompt(); S.instalar = null; rotear(); } }));
 
-  // Formulários por grupo
-  const grupos = [];
-  formularios().forEach(f => { if (!grupos.includes(f.grupo)) grupos.push(f.grupo); });
+  // Equipe que já registrou nesta filial
+  const equipe = equipeDaFilial();
+  if (!S.ajustes.avaliador) app.appendChild(h('div', { class: 'cartao alerta' },
+    h('strong', { text: 'Informe seu nome em Ajustes > Avaliador.' }),
+    h('p', { class: 'peq', text: 'Quando duas ou mais pessoas trabalham na mesma filial, é o nome que mostra quem fez cada levantamento.' })));
+  if (equipe.length) app.appendChild(h('div', { class: 'cartao equipe' },
+    h('div', { class: 'eq-cab' }, h('strong', { text: 'Equipe nesta filial' }), h('small', { text: 'Tudo o que cada um registra entra nos mesmos documentos' })),
+    h('div', { class: 'eq-lista' }, equipe.map(p => h('div', { class: 'eq-pessoa' + (p.nome === S.ajustes.avaliador ? ' eu' : '') },
+      h('span', { class: 'eq-ini', text: iniciais(p.nome) }),
+      h('div', null, h('strong', { text: p.nome + (p.nome === S.ajustes.avaliador ? ' (você)' : '') }),
+        h('small', { text: p.n + ' registro(s) · ' + p.grupos.map(g => GRUPO_VISUAL(g).curto).join(', ') + ' · último ' + dataHoraBr(p.ultimo) })))))));
+
+  // Menus por grupo (botões coloridos)
   const todos = registrosVisiveis();
-  grupos.forEach(g => {
-    app.appendChild(h('h3', { class: 'grupo', text: g }));
-    const lista = h('div', { class: 'lista-forms' });
-    formularios().filter(f => f.grupo === g).forEach(f => {
-      const regs = todos.filter(r => r.form === f.id && (f.semFilial || r.filial === S.ctx.filial));
-      const pend = regs.filter(pendente).length;
-      lista.appendChild(h('a', { class: 'item-form', href: '#/f/' + f.id },
-        h('div', { class: 'if-txt' }, h('strong', { text: f.titulo }), h('small', { text: f.ref || '' })),
-        h('div', { class: 'if-n' }, regs.length ? h('span', { class: 'bolha' + (pend ? ' pend' : ''), text: String(regs.length) }) : null)));
-    });
-    app.appendChild(lista);
+  const grade = h('div', { class: 'grade-grupos' });
+  gruposForms().forEach((g, i) => {
+    const vis = GRUPO_VISUAL(g);
+    const fs = formularios().filter(f => f.grupo === g);
+    const regs = todos.filter(r => fs.some(f => f.id === r.form && (f.semFilial || r.filial === S.ctx.filial)));
+    const rasc = regs.filter(r => r.status !== 'concluido').length;
+    const quem = [...new Set(regs.map(r => r.avaliador).filter(Boolean))];
+    grade.appendChild(h('a', { class: 'tile cor-' + vis.cor, href: '#/g/' + i },
+      h('span', { class: 'tile-ic', text: vis.ic }),
+      h('strong', { class: 'tile-tit', text: g }),
+      h('small', { class: 'tile-sub', text: fs.length + ' formulário(s)' + (regs.length ? ' · ' + regs.length + ' registro(s)' + (rasc ? ', ' + rasc + ' em rascunho' : '') : '') }),
+      quem.length ? h('span', { class: 'tile-quem' }, quem.slice(0, 4).map(n => h('span', { class: 'eq-ini mini', title: n, text: iniciais(n) }))) : null));
   });
+  app.appendChild(grade);
+}
+
+/* ======================= GRUPOS, CORES E EQUIPE ======================= */
+function GRUPO_VISUAL(g) {
+  const k = String(g || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  if (k.includes('prepar')) return { cor: 1, ic: '🧰', curto: 'Preparação' };
+  if (k.includes('ambient')) return { cor: 2, ic: '🌡️', curto: 'Ambientais' };
+  if (k.includes('insalub') || k.includes('pericul')) return { cor: 3, ic: '⚠️', curto: 'Insalubridade' };
+  if (k.includes('ergonom')) return { cor: 4, ic: '🧍', curto: 'Ergonomia' };
+  if (k.includes('requisit')) return { cor: 5, ic: '📋', curto: 'Requisitos' };
+  if (k.includes('particip')) return { cor: 6, ic: '👥', curto: 'Participação' };
+  return { cor: 7, ic: '📁', curto: g };
+}
+function gruposForms() { const g = []; formularios().forEach(f => { if (!g.includes(f.grupo)) g.push(f.grupo); }); return g; }
+function iniciais(n) { const p = String(n || '?').replace(/\(.*?\)/g, '').trim().split(/\s+/); return ((p[0] || '?')[0] + (p.length > 1 ? p[p.length - 1][0] : '')).toUpperCase(); }
+function equipeDaFilial() {
+  const m = new Map();
+  registrosVisiveis().forEach(r => {
+    const f = form(r.form);
+    if (!f || f.semFilial || r.filial !== S.ctx.filial || !r.avaliador) return;
+    const p = m.get(r.avaliador) || { nome: r.avaliador, n: 0, ultimo: '', grupos: [] };
+    p.n++; if (r.atualizadoEm > p.ultimo) p.ultimo = r.atualizadoEm;
+    if (!p.grupos.includes(f.grupo)) p.grupos.push(f.grupo);
+    m.set(r.avaliador, p);
+  });
+  return [...m.values()].sort((a, b) => b.ultimo.localeCompare(a.ultimo));
+}
+function desenharNavGrupos() {
+  let box = $('#nav-grupos');
+  if (!box) { box = h('div', { id: 'nav-grupos' }); $('#nav a[data-r="inicio"]').after(box); }
+  const gs = S.cfg ? gruposForms() : [];
+  if (box.dataset.chave === gs.join('|')) return;
+  box.dataset.chave = gs.join('|'); box.innerHTML = '';
+  gs.forEach((g, i) => { const v = GRUPO_VISUAL(g); box.appendChild(h('a', { href: '#/g/' + i, class: 'nav-g cor-' + v.cor, 'data-g': String(i) }, h('i'), v.curto)); });
+  const r0 = location.hash.replace('#/', '').split('/');
+  box.querySelectorAll('a').forEach(a => a.classList.toggle('on', r0[0] === 'g' && r0[1] === a.dataset.g));
+}
+
+function telaGrupo(app, i) {
+  const g = gruposForms()[i];
+  if (!g) { location.hash = '#/'; return; }
+  const vis = GRUPO_VISUAL(g);
+  definirTopo(g, true);
+  app.appendChild(h('div', { class: 'faixa-grupo cor-' + vis.cor },
+    h('span', { class: 'tile-ic', text: vis.ic }),
+    h('div', null, h('strong', { text: g }), h('small', { text: 'Filial ' + (S.ctx.filial || '(não escolhida)') + ' · ' + (S.ctx.fase || '') }))));
+  const todos = registrosVisiveis();
+  const lista = h('div', { class: 'lista-forms' });
+  formularios().filter(f => f.grupo === g).forEach(f => {
+    const regs = todos.filter(r => r.form === f.id && (f.semFilial || r.filial === S.ctx.filial));
+    const pend = regs.filter(pendente).length;
+    const quem = [...new Set(regs.map(r => r.avaliador).filter(Boolean))];
+    lista.appendChild(h('a', { class: 'item-form cor-' + vis.cor, href: '#/f/' + f.id },
+      h('div', { class: 'if-txt' }, h('strong', { text: f.titulo }), h('small', { text: f.ref || '' }),
+        quem.length ? h('small', { class: 'if-quem', text: 'Por: ' + quem.join(', ') }) : null),
+      h('div', { class: 'if-n' }, regs.length ? h('span', { class: 'bolha' + (pend ? ' pend' : ''), text: String(regs.length) }) : null)));
+  });
+  app.appendChild(lista);
 }
 
 function resumoRegistro(r) {
@@ -660,7 +740,8 @@ function linhaRegistro(r, mostrarForm) {
   return h('a', { class: 'item-reg', href: '#/r/' + r.id },
     h('div', { class: 'ir-txt' },
       h('strong', { text: resumoRegistro(r) }),
-      h('small', { text: [mostrarForm && f ? f.titulo : '', r.filial ? 'Filial ' + r.filial : '', dataHoraBr(r.atualizadoEm)].filter(Boolean).join(' · ') })),
+      h('small', { text: [mostrarForm && f ? f.titulo : '', r.filial ? 'Filial ' + r.filial : '', dataHoraBr(r.atualizadoEm)].filter(Boolean).join(' · ') }),
+      r.avaliador ? h('small', { class: 'ir-quem' }, h('span', { class: 'eq-ini mini', text: iniciais(r.avaliador) }), r.avaliador) : null),
     h('div', { class: 'ir-tags' },
       h('span', { class: 'tag ' + (r.status === 'concluido' ? 'ok' : 'rasc'), text: r.status === 'concluido' ? 'Concluído' : 'Rascunho' }),
       h('span', { class: 'tag ' + (pendente(r) ? 'pend' : 'env'), text: pendente(r) ? 'A enviar' : 'Enviado' })));
@@ -670,7 +751,7 @@ function telaFormulario(app, id) {
   const f = form(id);
   if (!f) { location.hash = '#/'; return; }
   definirTopo(f.titulo, true);
-  app.appendChild(h('div', { class: 'cartao' },
+  app.appendChild(h('div', { class: 'cartao faixa-cor cor-' + GRUPO_VISUAL(f.grupo).cor },
     h('div', { class: 'ref', text: f.ref || '' }),
     f.semFilial ? null : h('div', { class: 'ctx-linha', text: 'Filial ' + (S.ctx.filial || '(não escolhida)') + ' · ' + (S.ctx.fase || '') }),
     h('button', { class: 'bt larga', text: '+ Novo registro', onclick: () => novoRegistro(f.id) })));
@@ -729,6 +810,17 @@ async function telaAjustes(app) {
         try { const j = await api({ acao: 'ping' }); toast('Conectado. Servidor versão ' + j.versao + '.'); } catch (e) { toast(e.message, 6000); }
       } }),
       h('button', { class: 'bt', text: 'Baixar formulários', onclick: async () => { await salvar(); if (await baixarConfig(false)) location.hash = '#/'; } }))));
+
+  // Aparência (modo escuro)
+  const temaAtual = S.ajustes.tema || 'auto';
+  const chipsTema = chips(['Claro', 'Escuro', 'Automático'], { claro: 'Claro', escuro: 'Escuro', auto: 'Automático' }[temaAtual], false, async v => {
+    S.ajustes.tema = { 'Claro': 'claro', 'Escuro': 'escuro', 'Automático': 'auto' }[v] || 'auto';
+    await DB.kvSet('ajustes', S.ajustes); aplicarTema();
+  });
+  app.appendChild(h('div', { class: 'cartao' },
+    h('h3', { text: 'Aparência' }),
+    h('p', { class: 'peq', text: 'Modo escuro para avaliações à noite ou em locais com pouca luz. Automático segue o modo do celular ou do computador.' }),
+    chipsTema));
 
   // Sincronização entre aparelhos
   const ultRec = await DB.kvGet('ultimaRecepcao');
@@ -1074,13 +1166,17 @@ async function telaRegistro(app, id) {
   // Cabeçalho do registro
   const marca = h('span', { class: 'salvo', text: 'Salvo neste aparelho' });
   E.marcaSalvo = marca;
-  app.appendChild(h('div', { class: 'cartao fino' },
-    h('div', { class: 'ref', text: f.ref || '' }),
-    h('div', { class: 'ctx-linha' }, (reg.filial ? 'Filial ' + reg.filial + ' · ' : '') + 'Criado ' + dataHoraBr(reg.criadoEm) + ' · ', marca)));
+  app.appendChild(h('div', { class: 'cartao fino cab-reg faixa-cor cor-' + GRUPO_VISUAL(f.grupo).cor },
+    h('div', { class: 'cab-txt' },
+      h('div', { class: 'ref', text: f.ref || '' }),
+      h('div', { class: 'ctx-linha' }, (reg.filial ? 'Filial ' + reg.filial + ' · ' : '') + (reg.avaliador ? 'Por ' + reg.avaliador + ' · ' : '') + 'Criado ' + dataHoraBr(reg.criadoEm) + ' · ', marca)),
+    h('div', { class: 'cab-bts' },
+      h('button', { class: 'bt sec pequeno', title: 'Duplicar este registro', text: '⧉ Duplicar', onclick: async () => { await salvarEditorAgora(); duplicarRegistro(reg); } }),
+      h('button', { class: 'bt perigo pequeno', title: 'Excluir este registro', text: '🗑 Excluir', onclick: async () => { await salvarEditorAgora(); if (await excluirRegistro(reg)) history.back(); } }))));
 
   // Contexto: fase, seção, função, GHE
   const ctx = f.contexto || {};
-  const cartaoCtx = h('div', { class: 'cartao' });
+  const cartaoCtx = h('div', { class: 'cartao ctx-reg' });
   if (!f.semFilial) {
     const selFase = h('select', { class: 'inp', onchange: e => { reg.fase = e.target.value; alterou(); } },
       ((S.cfg && S.cfg.fases) || []).map(x => h('option', { value: x, text: x })));
@@ -1147,7 +1243,12 @@ async function telaRegistro(app, id) {
       cartaoCtx.appendChild(inpGhe);
     }
   }
-  if (cartaoCtx.childNodes.length) app.appendChild(cartaoCtx);
+  if (cartaoCtx.childNodes.length) {
+    // agrupa cada rótulo com o seu campo (no computador ficam lado a lado, 2 por linha)
+    const filhos = [...cartaoCtx.childNodes]; let par = null;
+    filhos.forEach(n => { if (n.tagName === 'LABEL' || !par) { par = h('div', { class: 'ctx-par' }); cartaoCtx.appendChild(par); } par.appendChild(n); });
+    app.appendChild(cartaoCtx);
+  }
 
   // Campos
   const corpo = h('div', { class: 'cartao campos' });
@@ -1534,11 +1635,11 @@ function barraReferencia(l) {
   const svg = document.createElementNS(ns, 'svg');
   svg.setAttribute('viewBox', '0 0 300 34'); svg.setAttribute('class', 'barra-svg');
   const add = (tag, at) => { const e = document.createElementNS(ns, tag); for (const k in at) e.setAttribute(k, at[k]); svg.appendChild(e); return e; };
-  add('rect', { x: 0, y: 10, width: W, height: 12, rx: 6, fill: '#e6ecee' });
-  add('rect', { x: x(l.faixa[0]), y: 10, width: Math.max(2, x(l.faixa[1]) - x(l.faixa[0])), height: 12, fill: '#bfe3cf' });
+  add('rect', { x: 0, y: 10, width: W, height: 12, rx: 6, fill: 'var(--trilho)' });
+  add('rect', { x: x(l.faixa[0]), y: 10, width: Math.max(2, x(l.faixa[1]) - x(l.faixa[0])), height: 12, fill: 'var(--faixa-ok)' });
   add('line', { x1: x(l.valor), y1: 4, x2: x(l.valor), y2: 28, stroke: ok ? '#2e8b57' : '#c0392b', 'stroke-width': 4, 'stroke-linecap': 'round' });
-  const t1 = add('text', { x: 2, y: 34, 'font-size': 9, fill: '#5d6f75' }); t1.textContent = mostraNum(a);
-  const t2 = add('text', { x: W - 2, y: 34, 'font-size': 9, fill: '#5d6f75', 'text-anchor': 'end' }); t2.textContent = mostraNum(b);
+  const t1 = add('text', { x: 2, y: 34, 'font-size': 9, fill: 'var(--sub)' }); t1.textContent = mostraNum(a);
+  const t2 = add('text', { x: W - 2, y: 34, 'font-size': 9, fill: 'var(--sub)', 'text-anchor': 'end' }); t2.textContent = mostraNum(b);
   return h('div', { class: 'barra-res' },
     h('div', { class: 'barra-cab' }, h('span', { text: l.rotulo }), h('strong', { class: ok ? 'ok' : 'fora', text: mostraNum(l.valor) + ' ' + l.unidade + (ok ? ' - dentro' : ' - fora') })),
     svg, h('div', { class: 'peq', text: l.ref || '' }));
@@ -1753,8 +1854,32 @@ function controleCronometro(c, esc) {
 }
 
 /* ================================ INÍCIO ================================ */
+/* ======================= TEMA E EFEITO DE CLIQUE ======================= */
+function aplicarTema() {
+  const t = S.ajustes.tema || 'auto';
+  const escuro = t === 'escuro' || (t === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.tema = escuro ? 'escuro' : 'claro';
+  try { localStorage.setItem('tema', t); } catch (e) { }
+  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = escuro ? '#10232a' : '#1f4e5f';
+}
+function ligarEfeitoClique() {
+  document.addEventListener('pointerdown', e => {
+    const el = e.target.closest('.bt, .chip, .item-form, .item-reg, .tile, #nav a, .status');
+    if (!el || el.disabled) return;
+    const r = el.getBoundingClientRect(), d = Math.max(r.width, r.height) * 2;
+    const o = document.createElement('span');
+    o.className = 'onda';
+    o.style.cssText = 'width:' + d + 'px;height:' + d + 'px;left:' + (e.clientX - r.left - d / 2) + 'px;top:' + (e.clientY - r.top - d / 2) + 'px';
+    el.appendChild(o);
+    setTimeout(() => o.remove(), 550);
+  }, { passive: true });
+}
+
 async function iniciar() {
   S.ajustes = (await DB.kvGet('ajustes')) || S.ajustes;
+  aplicarTema();
+  ligarEfeitoClique();
+  if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if ((S.ajustes.tema || 'auto') === 'auto') aplicarTema(); });
   S.ctx = (await DB.kvGet('ctx')) || S.ctx;
   S.extras = (await DB.kvGet('extras')) || S.extras;
   S.cfg = (await DB.kvGet('config')) || null;
@@ -1789,7 +1914,7 @@ async function iniciar() {
   }
 
   if (window.SERVIDOR_DEMO && !S.ajustes.url) {
-    S.ajustes = { url: 'demo', chave: 'demo', avaliador: 'DEMONSTRAÇÃO', carimbo: true };
+    S.ajustes = { url: 'demo', chave: 'demo', avaliador: 'IVANEY', carimbo: true };
     await DB.kvSet('ajustes', S.ajustes);
     await baixarConfig(true);
     if (!S.ctx.filial) { S.ctx.filial = (filiais()[0] || {}).codigo || ''; await DB.kvSet('ctx', S.ctx); }
