@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.6.0';
+const VERSAO_APP = '1.7.0';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -198,12 +198,9 @@ function funcoesDe(filial, secao) {
   (S.extras.funcoes[filial + '|' + secao] || []).forEach(x => s.add(x));
   return [...s].filter(Boolean).sort((a, b) => a.localeCompare(b, 'pt'));
 }
-/** GHE automático: seções da filial (QL) em ordem alfabética = 01, 02, 03... Seção que a filial não tem não ocupa número. */
+/** GHE nos registros e documentos: "GHE - SEÇÃO" (o número do GHE do PGR fica no plano da filial). */
 function gheDe(filial, secao) {
-  if (!secao) return '';
-  const unicas = [...new Set(linhasQl(filial).map(x => semAcento(x[2]).trim()).filter(Boolean))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-  const i = unicas.indexOf(semAcento(secao).trim());
-  return i < 0 ? '' : (i < 9 ? '0' : '') + (i + 1);
+  return secao ? 'GHE - ' + String(secao).trim() : '';
 }
 function alocadosDe(filial, secao, funcao) {
   const l = linhasQl(filial).find(x => x[0] === filial && x[2] === secao && x[3] === funcao);
@@ -239,7 +236,7 @@ function aplicarPadroes(campos, alvo) {
   });
 }
 
-async function novoRegistro(formId) {
+async function novoRegistro(formId, pre) {
   const f = form(formId);
   if (!f) return;
   if (!f.semFilial && !S.ctx.filial) { toast('Escolha a filial na tela inicial antes de começar.'); location.hash = '#/'; return; }
@@ -254,6 +251,14 @@ async function novoRegistro(formId) {
     criadoEm: agoraIso(), atualizadoEm: agoraIso(), versao: 1, valores: {}, anexos: [], sync: null
   };
   aplicarPadroes(f.campos, r.valores);
+  if (pre && pre.secao) {
+    const ctx = f.contexto || {};
+    if (ctx.secao) { r.secao = pre.secao; r.ghe = gheDe(r.filial, pre.secao); }
+    if (ctx.funcao && pre.funcao) r.funcao = pre.funcao;
+    const cSec = f.campos.find(c => c.tipo === 'secao'), cFun = f.campos.find(c => c.tipo === 'funcoes');
+    if (cSec && !ctx.secao) r.valores[cSec.id] = pre.secao;
+    if (cFun && pre.funcao) r.valores[cFun.id] = [pre.funcao];
+  }
   await gravarReg(r);
   pedirPersistencia();
   location.hash = '#/r/' + r.id;
@@ -609,6 +614,7 @@ async function rotear() {
   if (rota[0] === 'registros') return telaRegistros(app);
   if (rota[0] === 'ajustes') return telaAjustes(app);
   if (rota[0] === 'docs') return telaDocumentos(app);
+  if (rota[0] === 'plano') return telaPlano(app);
   return telaInicio(app);
 }
 
@@ -652,6 +658,15 @@ h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros
       h('span', { class: 'eq-ini', text: iniciais(p.nome) }),
       h('div', null, h('strong', { text: p.nome + (p.nome === S.ajustes.avaliador ? ' (você)' : '') }),
         h('small', { text: p.n + ' registro(s) · ' + p.grupos.map(g => GRUPO_VISUAL(g).curto).join(', ') + ' · último ' + dataHoraBr(p.ultimo) })))))));
+
+  // Plano de avaliação da filial
+  if (S.ctx.filial) {
+    const pc = S.planoResumo && S.planoResumo.filial === S.ctx.filial ? S.planoResumo : null;
+    app.appendChild(h('a', { class: 'cartao plano-atalho', href: '#/plano' },
+      h('span', { class: 'tile-ic', text: '🗺️' }),
+      h('div', null, h('strong', { text: 'Plano de avaliação da filial' }),
+        h('small', { text: pc ? (pc.pendentes ? pc.pendentes + ' avaliação(ões) pendente(s) em ' + pc.comTrab + ' funções com trabalhador' : 'Nenhuma avaliação pendente') : 'O que avaliar em cada função, a partir do PGR' }))));
+  }
 
   // Menus por grupo (botões coloridos)
   const todos = registrosVisiveis();
@@ -826,7 +841,8 @@ async function telaAjustes(app) {
     h('div', { class: 'linha-bts' },
       h('label', { class: 'bt sec' }, '📊 Atualizar QL (CSV)', inpQL),
       h('label', { class: 'bt sec' }, '👥 Atualizar funcionários (CSV)', inpFu),
-      h('label', { class: 'bt sec' }, '📋 Atualizar descrições das funções (CSV)', h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('DESC', e.target.files[0]); e.target.value = ''; } }))),
+      h('label', { class: 'bt sec' }, '📋 Atualizar descrições das funções (CSV)', h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('DESC', e.target.files[0]); e.target.value = ''; } })),
+      h('label', { class: 'bt sec' }, '🗂️ Atualizar plano base do PGR (CSV)', h('input', { type: 'file', accept: '.csv,.txt,text/csv', hidden: true, onchange: e => { importarArquivoFilial('PLANO', e.target.files[0]); e.target.value = ''; } }))),
     h('p', { class: 'peq', text: 'Descrições das funções (do PGR) no app: ' + (((S.cfg && S.cfg.listas && S.cfg.listas.descricoes) || []).length) + '. Elas preenchem a "Tarefa prescrita" ao escolher a função.' }),
     h('p', { class: 'peq', text: S.ctx.filial ? ('Funcionários da filial ' + S.ctx.filial + ' neste aparelho: ' + (fLocal && fLocal.lista ? fLocal.lista.length + ' (baixado ' + dataHoraBr(fLocal.baixadoEm) + ')' : 'nenhum')) : 'Escolha a filial na tela inicial.' }),
     h('div', { class: 'linha-bts' },
@@ -961,6 +977,7 @@ async function telaDocumentos(app) {
   }
   const chaveCache = 'docs:' + fil;
   let dados = await DB.kvGet(chaveCache);
+  const opcoesDocs = (await DB.kvGet('docsOpcoes:' + fil)) || {};
   const sel = new Set();
   const caixaSit = h('div', { class: 'cartao' });
   const caixaGerar = h('div', { class: 'cartao' });
@@ -980,6 +997,7 @@ async function telaDocumentos(app) {
         h('div', { class: 'rd ok' }, h('strong', { text: String(r['Atende'] || 0) }), h('span', { text: 'itens da NR-17 atendidos' })),
         h('div', { class: 'rd ' + (r['Não atende'] ? 'nc' : 'ok') }, h('strong', { text: String(r['Não atende'] || 0) }), h('span', { text: 'não atendidos (vão ao plano)' })),
         h('div', { class: 'rd ' + (r['Sem evidência'] ? 'pend' : 'ok') }, h('strong', { text: String(r['Sem evidência'] || 0) }), h('span', { text: 'sem evidência' }))));
+      if (dados.plano) caixaSit.appendChild(h('a', { class: 'bt sec larga', href: '#/plano', text: '🗺️ Plano de avaliação: ' + (dados.plano.pendentes ? dados.plano.pendentes + ' método(s) pendente(s)' : 'tudo avaliado') }));
       if ((dados.pendenciasLista || []).length) {
         const det = h('details', { class: 'pend-lista' }, h('summary', { text: 'Ver o que falta coletar (' + dados.pendenciasLista.length + ')' }),
           h('ul', null, dados.pendenciasLista.map(x => h('li', null, h('strong', { text: (x.secao && x.secao !== '-' ? x.secao + ' · ' : '') + x.funcao }), h('br'), x.pendencia, x.oQueFazer ? h('div', { class: 'peq', text: x.oQueFazer }) : null))));
@@ -993,14 +1011,24 @@ async function telaDocumentos(app) {
     caixaGerar.appendChild(h('h3', { text: 'Gerar' }));
     const inpEmissao = h('input', { class: 'inp curto-data', type: 'date', value: hojeIso(), max: hojeIso() });
     caixaGerar.appendChild(h('div', { class: 'linha-emissao' }, h('label', { class: 'rot', text: 'Data de emissão do documento' }), inpEmissao,
-      h('p', { class: 'peq', text: 'Vai na capa, na identificação e na assinatura. O período do levantamento continua sendo o das visitas registradas.' })));
+      h('p', { class: 'peq', text: 'Vai na capa, na identificação e na assinatura.' })));
+    const guardarOpcoes = () => DB.kvSet('docsOpcoes:' + fil, opcoesDocs);
+    const inpIni = h('input', { class: 'inp', type: 'datetime-local', value: opcoesDocs.ini || '', onchange: e => { opcoesDocs.ini = e.target.value; guardarOpcoes(); } });
+    const inpFim = h('input', { class: 'inp', type: 'datetime-local', value: opcoesDocs.fim || '', onchange: e => { opcoesDocs.fim = e.target.value; guardarOpcoes(); } });
+    caixaGerar.appendChild(h('div', { class: 'linha-periodo' },
+      h('label', { class: 'rot', text: 'Período da coleta de dados (início e fim, com data e hora)' }),
+      h('div', { class: 'linha-sel' }, inpIni, inpFim),
+      h('p', { class: 'peq', text: 'É o período que aparece nos documentos. A data e a hora de cada alteração dos registros ficam só na planilha, para consulta, e não vão para os documentos. Se deixar em branco, o documento usa os dias das aberturas de visita.' })));
+    const chkRiscos = h('input', { type: 'checkbox', checked: !!opcoesDocs.riscosNovos, onchange: e => { opcoesDocs.riscosNovos = e.target.checked; guardarOpcoes(); } });
+    caixaGerar.appendChild(h('label', { class: 'flag' }, chkRiscos, 'Incluir na AET os riscos para revisão do PGR' + (dados && dados.revisaoPGR !== null && dados.revisaoPGR !== undefined ? ' (' + dados.revisaoPGR + ' hoje)' : '')));
     const emissao = () => {
       const v = inpEmissao.value;
       if (!v) return hojeIso();
       if (v > hojeIso()) { toast('A data de emissão não pode ser futura.'); return null; }
       return v;
     };
-    caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d) gerar({ tipo: 'AET', dataEmissao: d }); } }));
+    const extras = () => ({ periodoIni: inpIni.value, periodoFim: inpFim.value, incluirRiscosNovos: chkRiscos.checked });
+    caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d) gerar(Object.assign({ tipo: 'AET', dataEmissao: d }, extras())); } }));
     const secoes = (dados && dados.secoes && dados.secoes.length) ? dados.secoes : secoesDe(fil);
     const selSec = h('select', { class: 'inp' }, h('option', { value: '', text: 'Escolha a seção' }), secoes.map(x => h('option', { value: x, text: x })));
     const recortes = (dados && dados.recortes) || ['Completo', 'Ergonomia', 'Conforto ambiental', 'Não conformidades e plano de ação'];
@@ -1010,7 +1038,12 @@ async function telaDocumentos(app) {
     caixaGerar.appendChild(h('button', { class: 'bt sec larga', text: 'Gerar relatório da seção', onclick: () => {
       if (!selSec.value) { toast('Escolha a seção.'); return; }
       const d = emissao(); if (!d) return;
-      gerar({ tipo: 'SECAO', secao: selSec.value, recorte: Number(selRec.value), dataEmissao: d });
+      gerar(Object.assign({ tipo: 'SECAO', secao: selSec.value, recorte: Number(selRec.value), dataEmissao: d }, extras()));
+    } }));
+    caixaGerar.appendChild(h('label', { class: 'rot', text: 'Revisão do PGR (relatório separado)' }));
+    caixaGerar.appendChild(h('button', { class: 'bt sec larga', text: 'Gerar relatório de riscos para revisão do PGR', onclick: () => {
+      const d = emissao(); if (!d) return;
+      gerar(Object.assign({ tipo: 'REVISAO_PGR', dataEmissao: d }, extras()));
     } }));
     caixaGerar.appendChild(h('p', { class: 'peq', text: 'Antes de gerar, o app envia o que estiver pendente neste aparelho. A geração leva de 1 a 3 minutos.' }));
 
@@ -1057,7 +1090,7 @@ async function telaDocumentos(app) {
     const p = dados && dados.pendencias;
     if (o.tipo === 'AET' && p && p.total && !(await confirmar('Há ' + p.total + ' pendência(s) de campo (' + (p.semLevantamento || 0) + ' funções sem levantamento, ' + (p.semAtividade || 0) + ' sem análise da atividade, ' +
       (p.semEvidencia || 0) + ' itens da NR-17 sem evidência). Os itens sem evidência entram como "Não evidenciado", com ação de 30 dias. Gerar a AET mesmo assim?', 'Gerar AET'))) return;
-    const aviso = modal(h('div', null, h('h3', { text: o.tipo === 'AET' ? 'Gerando a AET' : 'Gerando o relatório' }),
+    const aviso = modal(h('div', null, h('h3', { text: o.tipo === 'AET' ? 'Gerando a AET' : o.tipo === 'REVISAO_PGR' ? 'Gerando o relatório de revisão do PGR' : 'Gerando o relatório' }),
       h('p', { class: 'modal-txt', text: 'Isso leva de 1 a 3 minutos. Mantenha o app aberto e a internet ligada.' }), h('div', { class: 'girando' })), { semFechar: true });
     try {
       const j = await api(Object.assign({ acao: 'docs-gerar', filial: fil }, o), 340000);
@@ -1124,6 +1157,160 @@ async function telaDocumentos(app) {
       h('div', { class: 'linha-bts' }, h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => fechar() }), enviar)));
   }
 
+  desenhar();
+  carregar(false);
+}
+
+/* ========================== PLANO DE AVALIAÇÃO ========================== */
+const PLANO_ST = {
+  PENDENTE: { t: 'Pendente', c: 'pend' }, FEITO: { t: 'Feito', c: 'ok' }, NA: { t: 'Não se aplica', c: 'na' },
+  SUGERIDO: { t: 'Sugestão de campo', c: 'sug' }, LOCAL: { t: 'Feito neste aparelho (falta enviar)', c: 'loc' }
+};
+const PLANO_POR_FUNCAO = { ATIVIDADE: 1, ORGANIZACAO: 1, PARTICIPACAO: 1, CARGAS: 1, RULA: 1, STRAIN: 1 };
+const SIN_SECAO = { 'PROMOTORES (INTEGRADO)': 'PROMOTORES (INTEGRADOS)', 'ACOUGUE': 'ACOUGUE CARNE FRESCA' };
+function secaoNorm(s) { const k = semAcento(s).trim(); return SIN_SECAO[k] || k; }
+
+/** Registros deste aparelho que ainda não estão no plano do servidor (marca como "feito neste aparelho"). */
+function feitoNoAparelho(m, l, filial) {
+  return registrosVisiveis().some(r => {
+    if (r.form !== m.form || r.filial !== filial) return false;
+    if (m.form === 'CHECKOUT') return true;
+    const v = r.valores || {};
+    if (secaoNorm(r.secao || v.secao) !== secaoNorm(l.secao)) return false;
+    if (PLANO_POR_FUNCAO[m.form]) return semAcento(r.funcao).trim() === semAcento(l.funcao).trim();
+    const fs = Array.isArray(v.funcoes) ? v.funcoes.map(x => semAcento(x).trim()) : [];
+    return !fs.length || fs.includes(semAcento(l.funcao).trim());
+  });
+}
+
+async function telaPlano(app) {
+  definirTopo('Plano de avaliação', false);
+  const fil = S.ctx.filial;
+  if (!S.cfg || !fil) {
+    app.appendChild(h('div', { class: 'cartao destaque' }, h('p', { text: 'Escolha a filial na tela inicial.' }), h('a', { class: 'bt', href: '#/', text: 'Ir para o início' })));
+    return;
+  }
+  const chave = 'plano:' + fil;
+  let P = await DB.kvGet(chave);
+  const filtro = (await DB.kvGet('planoFiltro')) || { modo: 'pend', secao: '' };
+  const topo = h('div', { class: 'cartao' }), lista = h('div', { class: 'plano-lista' });
+  app.appendChild(topo); app.appendChild(lista);
+
+  function statusDe(m, l) {
+    if ((m.status === 'PENDENTE' || m.status === 'SUGERIDO') && feitoNoAparelho(m, l, fil)) return 'LOCAL';
+    return m.status;
+  }
+  function desenhar() {
+    topo.innerHTML = ''; lista.innerHTML = '';
+    topo.appendChild(h('h3', { text: 'Filial ' + fil }));
+    if (!P) {
+      topo.appendChild(h('p', { class: 'peq', text: navigator.onLine ? 'Carregando o plano...' : 'Sem internet. O plano vem do servidor: conecte uma vez para guardá-lo neste aparelho.' }));
+      return;
+    }
+    if (P.baseVazia) {
+      topo.appendChild(h('div', { class: 'cartao alerta' }, h('strong', { text: 'O plano base do PGR ainda não foi carregado.' }),
+        h('p', { class: 'peq', text: 'Em Ajustes > Atualizar dados, use "Atualizar plano base do PGR (CSV)".' })));
+    }
+    let pend = 0, comTrab = 0;
+    P.linhas.forEach(l => { if (l.alocados > 0) { comTrab++; l.metodos.forEach(m => { if (statusDe(m, l) === 'PENDENTE') pend++; }); } });
+    S.planoResumo = { filial: fil, pendentes: pend, comTrab };
+    topo.appendChild(h('div', { class: 'resumo-docs' },
+      h('div', { class: 'rd ' + (pend ? 'pend' : 'ok') }, h('strong', { text: String(pend) }), h('span', { text: 'avaliações pendentes' })),
+      h('div', { class: 'rd ok' }, h('strong', { text: String(comTrab) }), h('span', { text: 'funções com trabalhador' })),
+      h('div', { class: 'rd' }, h('strong', { text: String(P.linhas.length - comTrab) }), h('span', { text: 'sem trabalhador hoje' }))));
+    topo.appendChild(h('p', { class: 'peq', text: 'Os métodos marcados como PGR vêm dos riscos do inventário do GHE e são obrigatórios. As sugestões de campo só entram se você avaliar. Toque em um método para avaliar ou registrar "não se aplica". Atualizado em ' + dataHoraBr(P.baixadoEm) + '.' }));
+    const secs = [...new Set(P.linhas.map(l => l.secao))];
+    const selSec = h('select', { class: 'inp', onchange: e => { filtro.secao = e.target.value; DB.kvSet('planoFiltro', filtro); desenhar(); } },
+      h('option', { value: '', text: 'Todas as seções' }), secs.map(x => h('option', { value: x, text: x })));
+    selSec.value = filtro.secao || '';
+    const modos = [['pend', 'Com pendência'], ['trab', 'Com trabalhador'], ['todas', 'Todas']];
+    topo.appendChild(h('div', { class: 'linha-sel' }, selSec,
+      h('div', { class: 'chips' }, modos.map(([k, t]) => h('button', { type: 'button', class: 'chip' + (filtro.modo === k ? ' on' : ''), text: t, onclick: () => { filtro.modo = k; DB.kvSet('planoFiltro', filtro); desenhar(); } })))));
+    topo.appendChild(h('button', { class: 'bt sec larga', text: 'Atualizar do servidor', onclick: () => carregar(true) }));
+
+    const vis = P.linhas.filter(l => {
+      if (filtro.secao && l.secao !== filtro.secao) return false;
+      if (filtro.modo === 'trab') return l.alocados > 0;
+      if (filtro.modo === 'pend') return l.alocados > 0 && l.metodos.some(m => statusDe(m, l) === 'PENDENTE');
+      return true;
+    });
+    if (!vis.length) lista.appendChild(h('p', { class: 'vazio', text: filtro.modo === 'pend' ? 'Nenhuma função com avaliação pendente neste filtro.' : 'Nenhuma função neste filtro.' }));
+    let secAtual = '';
+    vis.forEach(l => {
+      if (l.secao !== secAtual) { secAtual = l.secao; lista.appendChild(h('h4', { class: 'plano-sec', text: 'GHE - ' + l.secao })); }
+      const chipsM = l.metodos.map(m => {
+        const st = statusDe(m, l), cfg = PLANO_ST[st];
+        return h('button', { type: 'button', class: 'pm st-' + cfg.c + (m.exig === 'BASE' ? ' base' : ''), title: cfg.t, onclick: () => acoes(l, m, st) },
+          h('span', { text: m.curto }), h('small', { text: m.exig === 'PGR' ? 'PGR' : m.exig === 'CAMPO' ? 'campo' : 'base' }));
+      });
+      const det = [];
+      if (l.condicao) det.push(h('div', { class: 'peq' }, h('strong', { text: 'Registrar a condição: ' }), l.condicao + ' (no formulário ' + (/Carrinho/.test(l.condicao) ? 'Ferramentas' : 'Mobiliário/Checkout') + ').'));
+      if (l.ambiente) det.push(h('div', { class: 'peq' }, h('strong', { text: 'Ambiente da seção: ' }), l.ambiente));
+      if (l.riscosPgr) det.push(h('div', { class: 'peq' }, h('strong', { text: 'Riscos do PGR: ' }), l.riscosPgr));
+      if (l.obs) det.push(h('div', { class: 'peq' }, h('strong', { text: 'Observação: ' }), l.obs));
+      if (l.origem === 'SEÇÃO') det.push(h('div', { class: 'peq aviso-txt', text: 'Função nova: não está no PGR base. Os métodos seguem o GHE da seção.' }));
+      if (l.origem === 'FORA') det.push(h('div', { class: 'peq aviso-txt', text: 'Função sem GHE no PGR base: vai para o relatório de revisão do PGR.' }));
+      lista.appendChild(h('div', { class: 'cartao plano-fun' + (l.alocados > 0 ? '' : ' sem-trab') },
+        h('div', { class: 'pf-cab' }, h('strong', { text: l.funcao }),
+          h('small', { text: (l.alocados > 0 ? l.alocados + ' trabalhador(es)' : 'sem trabalhador hoje (avaliar quando houver)') + (l.ghePgr ? ' · GHE ' + l.ghePgr + ' no PGR' : '') })),
+        h('div', { class: 'pm-linha' }, chipsM,
+          h('button', { type: 'button', class: 'pm add', title: 'Incluir outro método', text: '+', onclick: () => incluir(l) })),
+        det.length ? h('details', { class: 'pf-det' }, h('summary', { text: 'Detalhes' }), det) : null));
+    });
+  }
+
+  async function acoes(l, m, st) {
+    let fechar;
+    const bts = [];
+    bts.push(h('button', { class: 'bt larga', text: 'Novo registro: ' + m.nome, onclick: () => { fechar(); novoRegistro(m.form, { secao: l.secao, funcao: l.funcao }); } }));
+    const meus = registrosVisiveis().filter(r => r.form === m.form && r.filial === fil && (m.registros || []).includes(r.id));
+    meus.slice(0, 5).forEach(r => bts.push(h('a', { class: 'bt sec larga', href: '#/r/' + r.id, onclick: () => fechar(), text: 'Abrir registro de ' + dataHoraBr(r.atualizadoEm) })));
+    if (st === 'NA') bts.push(h('button', { class: 'bt sec larga', text: 'Desfazer "não se aplica"', onclick: async () => { fechar(); await decidir(l, m, '', ''); } }));
+    else if (m.exig !== 'BASE') bts.push(h('button', { class: 'bt sec larga', text: m.exig === 'CAMPO' ? 'Não avaliar (sugestão não confirmada)' : 'Não se aplica nesta filial...', onclick: async () => {
+      fechar();
+      const motivo = await perguntar('Por que ' + m.nome + ' não se aplica a ' + l.funcao + '? (vai para a AET' + (m.exig === 'PGR' ? ' e para o relatório de revisão do PGR' : '') + ')');
+      if (motivo === null || motivo === undefined) return;
+      if (String(motivo).trim().length < 5) { toast('Escreva o motivo com um pouco mais de detalhe.'); return; }
+      await decidir(l, m, 'NA', motivo.trim());
+    } }));
+    fechar = modal(h('div', null, h('h3', { text: m.nome }),
+      h('p', { class: 'peq', text: l.funcao + ' · GHE - ' + l.secao }),
+      h('p', { class: 'peq', text: 'Situação: ' + PLANO_ST[st].t + (m.motivo ? ' - ' + m.motivo : '') + (m.exig === 'PGR' ? '. Exigido pelo risco do PGR.' : m.exig === 'CAMPO' ? '. Sugestão de campo: se o risco existir, vai para o relatório de revisão do PGR.' : '. Avaliação básica de toda função (AEP).') }),
+      h('div', { class: 'col-bts' }, bts),
+      h('div', { class: 'linha-bts' }, h('button', { class: 'bt sec', text: 'Fechar', onclick: () => fechar() }))));
+  }
+
+  async function incluir(l) {
+    const ja = new Set(l.metodos.map(m => m.cod));
+    const op = (P.metodos || []).filter(m => !m.base && !ja.has(m.cod));
+    if (!op.length) { toast('Todos os métodos já estão no plano desta função.'); return; }
+    let fechar;
+    fechar = modal(h('div', null, h('h3', { text: 'Incluir método' }), h('p', { class: 'peq', text: l.funcao + ' · GHE - ' + l.secao + '. Um risco encontrado por um método incluído vai para o relatório de revisão do PGR.' }),
+      h('div', { class: 'col-bts' }, op.map(m => h('button', { class: 'bt sec larga', text: m.nome, onclick: async () => { fechar(); await decidir(l, m, 'INCLUIR', 'Incluído em campo'); } }))),
+      h('div', { class: 'linha-bts' }, h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => fechar() }))));
+  }
+
+  async function decidir(l, m, decisao, motivo) {
+    if (!navigator.onLine) { toast('Precisa de internet para gravar a decisão no plano.'); return; }
+    try {
+      const j = await api({ acao: 'plano-decidir', filial: fil, secao: l.secao, funcao: l.funcao, metodo: m.cod, decisao, motivo, avaliador: S.ajustes.avaliador || '' }, 60000);
+      P = Object.assign(j.plano, { baixadoEm: agoraIso() }); await DB.kvSet(chave, P);
+      toast(decisao === 'NA' ? 'Registrado: não se aplica.' : decisao === 'INCLUIR' ? 'Método incluído no plano.' : 'Decisão desfeita.');
+      desenhar();
+    } catch (e) { toast(e.message, 7000); }
+  }
+
+  async function carregar(manual) {
+    if (!navigator.onLine) { if (manual) toast('Sem internet.'); desenhar(); return; }
+    if (manual) toast('Atualizando o plano...', 15000);
+    try {
+      if (manual && qtdPendentes()) await sincronizar(false);
+      const j = await api({ acao: 'plano', filial: fil }, 120000);
+      P = Object.assign(j, { baixadoEm: agoraIso() }); await DB.kvSet(chave, P);
+      if (manual) toast('Plano atualizado.');
+    } catch (e) { toast(e.message, 7000); }
+    if (location.hash.startsWith('#/plano')) desenhar();
+  }
   desenhar();
   carregar(false);
 }
@@ -1224,7 +1411,7 @@ async function telaRegistro(app, id) {
     const info = h('div', { class: 'peq' });
     const selFun = h('select', { class: 'inp' });
     if (reg.secao) { const g0 = gheDe(reg.filial, reg.secao); if (g0 && g0 !== reg.ghe) { reg.ghe = g0; E.sujo = true; } }
-    const inpGhe = h('input', { class: 'inp', value: reg.ghe || '', placeholder: 'automático pela seção', readonly: true, tabindex: -1, title: 'Numerado sozinho: seções da filial em ordem alfabética' });
+    const inpGhe = h('input', { class: 'inp', value: reg.ghe || '', placeholder: 'automático pela seção', readonly: true, tabindex: -1, title: 'GHE pela seção do quadro de lotação' });
     const mostrarInfo = () => {
       const n = alocadosDe(reg.filial, reg.secao, reg.funcao);
       info.textContent = (n !== '' && reg.funcao) ? 'Alocados no QL: ' + n : '';
@@ -1271,6 +1458,7 @@ async function telaRegistro(app, id) {
       preencherDoPGR(S.editor);
     });
     encherFuncoes(); mostrarInfo();
+    if (reg.funcao && f.campos.some(c => c.doPGR)) setTimeout(() => preencherDoPGR(S.editor), 300);
     cartaoCtx.appendChild(h('label', { class: 'rot', text: 'Seção' }));
     cartaoCtx.appendChild(selSec);
     if (ctx.funcao) {
@@ -2149,7 +2337,8 @@ async function lerTextoArquivo(arq) {
 async function importarArquivoFilial(tipo, arq) {
   if (!arq) return;
   if (!navigator.onLine) { toast('Precisa de internet para enviar o arquivo.'); return; }
-  const nomeTipo = tipo === 'QL' ? 'quadro de lotação (QL)' : tipo === 'DESC' ? 'descrições das funções' : 'lista de funcionários';
+  const inteira = tipo === 'DESC' || tipo === 'PLANO';
+  const nomeTipo = tipo === 'QL' ? 'quadro de lotação (QL)' : tipo === 'DESC' ? 'descrições das funções' : tipo === 'PLANO' ? 'plano base do PGR' : 'lista de funcionários';
   let espera = modal(h('div', null, h('div', { class: 'girando' }), h('p', { class: 'modal-txt', text: 'Lendo o arquivo...' })), { semFechar: true });
   let texto;
   try { texto = await lerTextoArquivo(arq); } catch (e) { espera(); toast('Não consegui ler o arquivo: ' + e.message); return; }
@@ -2157,13 +2346,13 @@ async function importarArquivoFilial(tipo, arq) {
     return api({ acao: 'importar', tipo, texto, filial: soFilial || '', aplicar: false }, 240000);
   }
   try {
-    const temFilial = !!S.ctx.filial && tipo !== 'DESC';
+    const temFilial = !!S.ctx.filial && !inteira;
     let soFilial = temFilial ? S.ctx.filial : '';
     let j;
     try { j = await previa(soFilial); }
     catch (e) { if (soFilial && /não tem linhas da filial/.test(e.message)) { soFilial = ''; j = await previa(''); } else throw e; }
     espera();
-    const resumoTxt = r => tipo === 'DESC' ? 'Descrições: ' + r.antes + ' → ' + r.depois + ' (a tabela inteira é trocada)' : tipo === 'QL'
+    const resumoTxt = r => inteira ? (tipo === 'PLANO' ? 'Plano base: ' : 'Descrições: ') + r.antes + ' → ' + r.depois + ' (a tabela inteira é trocada)' : tipo === 'QL'
       ? 'Filial ' + r.filial + ': ' + r.linhasAntes + ' → ' + r.linhasDepois + ' funções; trabalhadores ' + r.totalAntes + ' → ' + r.totalDepois +
         (r.novas.length ? '. Novas: ' + r.novas.slice(0, 8).join('; ') + (r.novas.length > 8 ? '...' : '') : '') + (r.removidas.length ? '. Saem: ' + r.removidas.slice(0, 8).join('; ') + (r.removidas.length > 8 ? '...' : '') : '')
       : 'Filial ' + r.filial + ': ' + r.antes + ' → ' + r.depois + ' funcionários (' + r.entraram + ' entram, ' + r.sairam + ' saem; ' + r.secoes + ' seções)';
@@ -2171,10 +2360,10 @@ async function importarArquivoFilial(tipo, arq) {
       let f;
       const caixa = h('div', null,
         h('h3', { text: 'Atualizar ' + nomeTipo }),
-        h('p', { class: 'peq', text: 'Arquivo: ' + arq.name + (tipo === 'DESC' ? '' : ' · ' + j.filiaisNoArquivo + ' filial(is) no arquivo.') }),
+        h('p', { class: 'peq', text: 'Arquivo: ' + arq.name + (inteira ? '' : ' · ' + j.filiaisNoArquivo + ' filial(is) no arquivo.') }),
         h('ul', { class: 'imp-resumo' }, j.resumo.slice(0, 12).map(r => h('li', { text: resumoTxt(r) }))),
         j.resumo.length > 12 ? h('p', { class: 'peq', text: '... e mais ' + (j.resumo.length - 12) + ' filial(is).' }) : null,
-        tipo === 'DESC' ? null : h('p', { class: 'peq', text: soFilial ? 'Só a filial ' + soFilial + ' será trocada; as outras continuam como estão.' : 'As filiais do arquivo serão trocadas; as que não estão no arquivo continuam como estão.' }),
+        inteira ? null : h('p', { class: 'peq', text: soFilial ? 'Só a filial ' + soFilial + ' será trocada; as outras continuam como estão.' : 'As filiais do arquivo serão trocadas; as que não estão no arquivo continuam como estão.' }),
         h('div', { class: 'linha-bts' },
           h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => { f(); resolve(null); } }),
           soFilial && j.filiaisNoArquivo > 1 ? h('button', { class: 'bt sec', text: 'Aplicar a todas as ' + j.filiaisNoArquivo + ' filiais', onclick: () => { f(); resolve('todas'); } }) : null,
@@ -2185,7 +2374,7 @@ async function importarArquivoFilial(tipo, arq) {
     espera = modal(h('div', null, h('div', { class: 'girando' }), h('p', { class: 'modal-txt', text: 'Gravando na planilha...' })), { semFechar: true });
     const fim = await api({ acao: 'importar', tipo, texto, filial: escolha === 'todas' ? '' : escolha, aplicar: true }, 300000);
     espera();
-    toast(tipo === 'DESC' ? 'Descrições das funções atualizadas: ' + fim.linhas + ' linha(s).' : (tipo === 'QL' ? 'QL atualizado' : 'Lista de funcionários atualizada') + ': ' + fim.linhas + ' linha(s) em ' + fim.filiais.length + ' filial(is).', 6000);
+    toast(inteira ? (tipo === 'PLANO' ? 'Plano base do PGR atualizado: ' : 'Descrições das funções atualizadas: ') + fim.linhas + ' linha(s).' : (tipo === 'QL' ? 'QL atualizado' : 'Lista de funcionários atualizada') + ': ' + fim.linhas + ' linha(s) em ' + fim.filiais.length + ' filial(is).', 6000);
     if (tipo === 'QL' || tipo === 'DESC') await baixarConfig(true); else if (S.ctx.filial) await baixarFuncionarios(S.ctx.filial, false, true);
     rotear();
   } catch (e) { try { espera(); } catch (x) { } toast(e.message, 9000); }
@@ -2343,7 +2532,7 @@ function marcarPontosGonio(fonte, anterior) {
       if (final) { // legenda na própria imagem (evidência)
         const f = faixasRULA(a);
         const linhas = Object.keys(GONIO_NOMES).filter(k => a[k] !== undefined).map(k => GONIO_NOMES[k] + ': ' + Math.round(Math.abs(a[k])) + '° ' + f[k].t + ' (RULA ' + f[k].n + ')');
-        linhas.push('Medido em foto de perfil (2D) · ' + dataHoraBr(agoraIso()));
+        linhas.push('Medido em foto de perfil (2D)');
         const tam = Math.round(18 * e); ctx.font = tam + 'px system-ui, sans-serif';
         const larg = Math.max(...linhas.map(l => ctx.measureText(l).width)) + 20 * e, alt = linhas.length * (tam + 6 * e) + 14 * e;
         ctx.fillStyle = 'rgba(0,0,0,.72)'; ctx.fillRect(10 * e, H - alt - 10 * e, larg, alt);

@@ -317,3 +317,28 @@ label.bt input[type=file] { display: none; }
 .gonio-prev { max-width: 100%; max-height: 260px; border-radius: 10px; display: block; margin-bottom: 4px; cursor: zoom-in; }
 .gonio-video { width: 100%; max-height: 55vh; background: #000; border-radius: 10px; }
 .gonio-barra { width: 100%; }
+
+/* ===== Plano de avaliação ===== */
+.plano-atalho { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--txt); border-left: 5px solid var(--g4b); }
+.plano-atalho strong { display: block; } .plano-atalho small { color: var(--sub); }
+.plano-sec { margin: 18px 4px 6px; font-size: 13px; letter-spacing: .3px; color: var(--sub); text-transform: uppercase; }
+.plano-fun { padding: 12px; margin-bottom: 8px; }
+.plano-fun.sem-trab { opacity: .72; }
+.pf-cab strong { display: block; font-size: 15px; } .pf-cab small { color: var(--sub); }
+.pm-linha { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pm { border: 1.5px solid var(--borda); background: var(--item-bg); color: var(--txt); border-radius: 9px; padding: 5px 9px; font: inherit; font-size: 13px;
+  display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 1.15; cursor: pointer; min-width: 64px; }
+.pm small { font-size: 10.5px; opacity: .75; text-transform: uppercase; letter-spacing: .3px; }
+.pm.st-pend { border-color: var(--pend); background: color-mix(in srgb, var(--pend) 14%, transparent); }
+.pm.st-ok { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pm.st-ok span::before { content: '✓ '; }
+.pm.st-loc { border-color: var(--ok); border-style: dashed; }
+.pm.st-loc span::before { content: '◷ '; }
+.pm.st-na { border-color: var(--borda); color: var(--sub); text-decoration: line-through; }
+.pm.st-sug { border-style: dashed; border-color: var(--g5b); background: var(--g5); color: var(--g5t); }
+.pm.base { min-width: 0; }
+.pm.add { justify-content: center; align-items: center; font-size: 18px; min-width: 38px; }
+.pf-det { margin-top: 8px; } .pf-det summary { font-size: 13px; color: var(--pri); cursor: pointer; } .pf-det > div { margin-top: 4px; }
+.aviso-txt { color: var(--alerta-txt); background: var(--alerta-bg); border-radius: 8px; padding: 4px 8px; }
+.col-bts { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.linha-periodo { margin: 10px 0; }

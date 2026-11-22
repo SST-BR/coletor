@@ -1,5 +1,5 @@
 /* Service worker: guarda a "casca" do aplicativo para abrir sem internet. Não guarda dados. */
-const VERSAO = 'coletor-v1.6.0';
+const VERSAO = 'coletor-v1.7.0';
 const ARQUIVOS = ['./', './index.html', './app.css', './app.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
 
