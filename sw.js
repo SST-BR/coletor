@@ -1,10 +1,11 @@
 /* Service worker: guarda a "casca" do aplicativo para abrir sem internet. Não guarda dados. */
-const VERSAO = 'coletor-v1.4.0';
+const VERSAO = 'coletor-v1.4.1';
 const ARQUIVOS = ['./', './index.html', './app.css', './app.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSAO).then(c => c.addAll(ARQUIVOS)));
+  // cache: 'reload' busca direto do servidor, sem pegar cópia antiga guardada pelo navegador
+  e.waitUntil(caches.open(VERSAO).then(c => c.addAll(ARQUIVOS.map(u => new Request(u, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', e => {
