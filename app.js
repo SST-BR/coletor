@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.5.0';
+const VERSAO_APP = '1.5.1';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -198,9 +198,12 @@ function funcoesDe(filial, secao) {
   (S.extras.funcoes[filial + '|' + secao] || []).forEach(x => s.add(x));
   return [...s].filter(Boolean).sort((a, b) => a.localeCompare(b, 'pt'));
 }
-function gheDe(filial, secao, funcao) {
-  const l = linhasQl(filial).find(x => x[2] === secao && x[3] === funcao && x[4]);
-  return l ? l[4] : '';
+/** GHE automático: seções da filial (QL) em ordem alfabética = 01, 02, 03... Seção que a filial não tem não ocupa número. */
+function gheDe(filial, secao) {
+  if (!secao) return '';
+  const unicas = [...new Set(linhasQl(filial).map(x => semAcento(x[2]).trim()).filter(Boolean))].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  const i = unicas.indexOf(semAcento(secao).trim());
+  return i < 0 ? '' : (i < 9 ? '0' : '') + (i + 1);
 }
 function alocadosDe(filial, secao, funcao) {
   const l = linhasQl(filial).find(x => x[0] === filial && x[2] === secao && x[3] === funcao);
@@ -1219,7 +1222,8 @@ async function telaRegistro(app, id) {
   if (ctx.secao) {
     const info = h('div', { class: 'peq' });
     const selFun = h('select', { class: 'inp' });
-    const inpGhe = h('input', { class: 'inp', value: reg.ghe || '', placeholder: 'GHE', oninput: e => { reg.ghe = e.target.value; alterou(); } });
+    if (reg.secao) { const g0 = gheDe(reg.filial, reg.secao); if (g0 && g0 !== reg.ghe) { reg.ghe = g0; E.sujo = true; } }
+    const inpGhe = h('input', { class: 'inp', value: reg.ghe || '', placeholder: 'automático pela seção', readonly: true, tabindex: -1, title: 'Numerado sozinho: seções da filial em ordem alfabética' });
     const mostrarInfo = () => {
       const n = alocadosDe(reg.filial, reg.secao, reg.funcao);
       info.textContent = (n !== '' && reg.funcao) ? 'Alocados no QL: ' + n : '';
@@ -1243,7 +1247,7 @@ async function telaRegistro(app, id) {
         e.target.insertBefore(h('option', { value: v, text: v }), e.target.lastChild);
         e.target.value = v;
       }
-      reg.secao = v; reg.funcao = ''; reg.ghe = ''; inpGhe.value = '';
+      reg.secao = v; reg.funcao = ''; reg.ghe = gheDe(reg.filial, v); inpGhe.value = reg.ghe;
       encherFuncoes(); mostrarInfo(); alterou();
     } }, h('option', { value: '', text: 'Escolha a seção' }), secoesDe(reg.filial).map(x => h('option', { value: x, text: x })),
       (reg.secao && !secoesDe(reg.filial).includes(reg.secao)) ? h('option', { value: reg.secao, text: reg.secao }) : null,
@@ -1260,7 +1264,7 @@ async function telaRegistro(app, id) {
         await DB.kvSet('extras', S.extras);
       }
       reg.funcao = v;
-      const g = gheDe(reg.filial, reg.secao, reg.funcao);
+      const g = gheDe(reg.filial, reg.secao);
       if (g) { reg.ghe = g; inpGhe.value = g; }
       encherFuncoes(); mostrarInfo(); alterou();
       preencherDoPGR(S.editor);
@@ -1272,7 +1276,7 @@ async function telaRegistro(app, id) {
       cartaoCtx.appendChild(h('label', { class: 'rot', text: 'Função' + (ctx.funcaoObrig ? ' *' : '') }));
       cartaoCtx.appendChild(selFun);
       cartaoCtx.appendChild(info);
-      cartaoCtx.appendChild(h('label', { class: 'rot', text: 'GHE' }));
+      cartaoCtx.appendChild(h('label', { class: 'rot', text: 'GHE (automático pela seção)' }));
       cartaoCtx.appendChild(inpGhe);
     }
   }
@@ -1406,6 +1410,7 @@ const CONTROLES = {
     return h('div', null, t, h('button', { type: 'button', class: 'bt sec pequeno bt-pgr', text: '📋 Usar descrição do PGR', onclick: async () => {
       const r = S.editor && S.editor.reg;
       const d = r ? descricaoPGR(r.secao, r.funcao) : '';
+      if (!d && r && r.funcao && !((S.cfg.listas || {}).descricoes || []).length) { toast('As descrições do PGR ainda não estão neste aparelho. Com internet, toque em Ajustes > Baixar formulários.', 7000); return; }
       if (!d) { toast(r && r.funcao ? 'Não há descrição no PGR para ' + r.funcao + '.' : 'Escolha a seção e a função primeiro.'); return; }
       if (esc[c.id] && esc[c.id] !== d && !(await confirmar('Trocar o texto atual pela descrição do PGR?', 'Trocar'))) return;
       esc[c.id] = d; t.value = d; ajusta(); alterou();
@@ -1924,8 +1929,10 @@ function descricaoPGR(secao, funcao) {
   return soFuncao ? soFuncao[2] : '';
 }
 /** Ao escolher a função: preenche os campos marcados doPGR que estiverem vazios. */
-function preencherDoPGR(E) {
+async function preencherDoPGR(E) {
   if (!E || !E.f) return;
+  if (!((S.cfg && S.cfg.listas && S.cfg.listas.descricoes) || []).length && navigator.onLine && S.ajustes.url) await baixarConfig(true);
+  if (S.editor !== E) return;
   const d = descricaoPGR(E.reg.secao, E.reg.funcao);
   if (!d) return;
   let n = 0;
@@ -2251,7 +2258,11 @@ async function iniciar() {
   rotear();
   if (navigator.onLine && S.ajustes.url && S.ajustes.chave) {
     const idade = S.cfg ? Date.now() - new Date(S.cfg.geradoEm).getTime() : Infinity;
-    if (idade > 3600000) { await baixarConfig(true); if (!location.hash || location.hash === '#/') rotear(); }
+    const versaoAnterior = await DB.kvGet('versaoApp');
+    if (idade > 3600000 || versaoAnterior !== VERSAO_APP) {
+      if (await baixarConfig(true)) await DB.kvSet('versaoApp', VERSAO_APP);
+      if (!location.hash || location.hash === '#/' || location.hash.startsWith('#/r/')) rotear();
+    }
     sincronizar(false);
     if (S.ctx.filial) baixarFuncionarios(S.ctx.filial, false);
   }
