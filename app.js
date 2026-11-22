@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.7.0';
+const VERSAO_APP = '1.7.1';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -665,7 +665,7 @@ h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros
     app.appendChild(h('a', { class: 'cartao plano-atalho', href: '#/plano' },
       h('span', { class: 'tile-ic', text: '🗺️' }),
       h('div', null, h('strong', { text: 'Plano de avaliação da filial' }),
-        h('small', { text: pc ? (pc.pendentes ? pc.pendentes + ' avaliação(ões) pendente(s) em ' + pc.comTrab + ' funções com trabalhador' : 'Nenhuma avaliação pendente') : 'O que avaliar em cada função, a partir do PGR' }))));
+        h('small', { text: pc ? (pc.pendentes ? pc.pendentes + ' avaliação(ões) pendente(s) em ' + pc.comTrab + ' funções com trabalhador ou vaga' : 'Nenhuma avaliação pendente') : 'O que avaliar em cada função, a partir do PGR' }))));
   }
 
   // Menus por grupo (botões coloridos)
@@ -1171,6 +1171,13 @@ const SIN_SECAO = { 'PROMOTORES (INTEGRADO)': 'PROMOTORES (INTEGRADOS)', 'ACOUGU
 function secaoNorm(s) { const k = semAcento(s).trim(); return SIN_SECAO[k] || k; }
 
 /** Registros deste aparelho que ainda não estão no plano do servidor (marca como "feito neste aparelho"). */
+/** Regras do QL iguais às do PGR: vaga aberta conta; trabalhadores = maior valor entre LIMITE e ALOCADOS. */
+function trabDe(l) { return l.trab !== undefined ? Number(l.trab) || 0 : Math.max(Number(l.limite) || 0, Number(l.alocados) || 0); }
+function textoTrabPlano(l) {
+  const t = trabDe(l), a = Number(l.alocados) || 0;
+  if (t > a) return t + ' trabalhador(es): ' + a + ' alocado(s) e ' + (t - a) + ' vaga(s) em aberto';
+  return t + ' trabalhador(es)';
+}
 function feitoNoAparelho(m, l, filial) {
   return registrosVisiveis().some(r => {
     if (r.form !== m.form || r.filial !== filial) return false;
@@ -1212,26 +1219,26 @@ async function telaPlano(app) {
         h('p', { class: 'peq', text: 'Em Ajustes > Atualizar dados, use "Atualizar plano base do PGR (CSV)".' })));
     }
     let pend = 0, comTrab = 0;
-    P.linhas.forEach(l => { if (l.alocados > 0) { comTrab++; l.metodos.forEach(m => { if (statusDe(m, l) === 'PENDENTE') pend++; }); } });
+    P.linhas.forEach(l => { if (trabDe(l) > 0) { comTrab++; l.metodos.forEach(m => { if (statusDe(m, l) === 'PENDENTE') pend++; }); } });
     S.planoResumo = { filial: fil, pendentes: pend, comTrab };
     topo.appendChild(h('div', { class: 'resumo-docs' },
       h('div', { class: 'rd ' + (pend ? 'pend' : 'ok') }, h('strong', { text: String(pend) }), h('span', { text: 'avaliações pendentes' })),
-      h('div', { class: 'rd ok' }, h('strong', { text: String(comTrab) }), h('span', { text: 'funções com trabalhador' })),
-      h('div', { class: 'rd' }, h('strong', { text: String(P.linhas.length - comTrab) }), h('span', { text: 'sem trabalhador hoje' }))));
+      h('div', { class: 'rd ok' }, h('strong', { text: String(comTrab) }), h('span', { text: 'funções com trabalhador ou vaga' })),
+      h('div', { class: 'rd' }, h('strong', { text: String(P.linhas.filter(l => trabDe(l) > (Number(l.alocados) || 0)).length) }), h('span', { text: 'com vaga em aberto' }))));
     topo.appendChild(h('p', { class: 'peq', text: 'Os métodos marcados como PGR vêm dos riscos do inventário do GHE e são obrigatórios. As sugestões de campo só entram se você avaliar. Toque em um método para avaliar ou registrar "não se aplica". Atualizado em ' + dataHoraBr(P.baixadoEm) + '.' }));
     const secs = [...new Set(P.linhas.map(l => l.secao))];
     const selSec = h('select', { class: 'inp', onchange: e => { filtro.secao = e.target.value; DB.kvSet('planoFiltro', filtro); desenhar(); } },
       h('option', { value: '', text: 'Todas as seções' }), secs.map(x => h('option', { value: x, text: x })));
     selSec.value = filtro.secao || '';
-    const modos = [['pend', 'Com pendência'], ['trab', 'Com trabalhador'], ['todas', 'Todas']];
+    const modos = [['pend', 'Com pendência'], ['vaga', 'Com vaga em aberto'], ['todas', 'Todas']];
     topo.appendChild(h('div', { class: 'linha-sel' }, selSec,
       h('div', { class: 'chips' }, modos.map(([k, t]) => h('button', { type: 'button', class: 'chip' + (filtro.modo === k ? ' on' : ''), text: t, onclick: () => { filtro.modo = k; DB.kvSet('planoFiltro', filtro); desenhar(); } })))));
     topo.appendChild(h('button', { class: 'bt sec larga', text: 'Atualizar do servidor', onclick: () => carregar(true) }));
 
     const vis = P.linhas.filter(l => {
       if (filtro.secao && l.secao !== filtro.secao) return false;
-      if (filtro.modo === 'trab') return l.alocados > 0;
-      if (filtro.modo === 'pend') return l.alocados > 0 && l.metodos.some(m => statusDe(m, l) === 'PENDENTE');
+      if (filtro.modo === 'vaga') return trabDe(l) > (Number(l.alocados) || 0);
+      if (filtro.modo === 'pend') return trabDe(l) > 0 && l.metodos.some(m => statusDe(m, l) === 'PENDENTE');
       return true;
     });
     if (!vis.length) lista.appendChild(h('p', { class: 'vazio', text: filtro.modo === 'pend' ? 'Nenhuma função com avaliação pendente neste filtro.' : 'Nenhuma função neste filtro.' }));
@@ -1249,10 +1256,11 @@ async function telaPlano(app) {
       if (l.riscosPgr) det.push(h('div', { class: 'peq' }, h('strong', { text: 'Riscos do PGR: ' }), l.riscosPgr));
       if (l.obs) det.push(h('div', { class: 'peq' }, h('strong', { text: 'Observação: ' }), l.obs));
       if (l.origem === 'SEÇÃO') det.push(h('div', { class: 'peq aviso-txt', text: 'Função nova: não está no PGR base. Os métodos seguem o GHE da seção.' }));
-      if (l.origem === 'FORA') det.push(h('div', { class: 'peq aviso-txt', text: 'Função sem GHE no PGR base: vai para o relatório de revisão do PGR.' }));
-      lista.appendChild(h('div', { class: 'cartao plano-fun' + (l.alocados > 0 ? '' : ' sem-trab') },
+      if (l.origem === 'FORA') det.push(h('div', { class: 'peq aviso-txt', text: 'Seção sem GHE no PGR base: vai para o relatório de revisão do PGR (criar GHE).' }));
+      if (l.origem === 'AMBIGUO') det.push(h('div', { class: 'peq aviso-txt', text: 'Função nova numa seção com mais de um GHE no PGR (' + (l.ghesSecao || []).join(', ') + '): definir o GHE na revisão do PGR. Por enquanto só a avaliação básica.' }));
+      lista.appendChild(h('div', { class: 'cartao plano-fun' + (trabDe(l) > 0 ? '' : ' sem-trab') },
         h('div', { class: 'pf-cab' }, h('strong', { text: l.funcao }),
-          h('small', { text: (l.alocados > 0 ? l.alocados + ' trabalhador(es)' : 'sem trabalhador hoje (avaliar quando houver)') + (l.ghePgr ? ' · GHE ' + l.ghePgr + ' no PGR' : '') })),
+          h('small', { text: textoTrabPlano(l) + (l.ghePgr ? ' · GHE ' + l.ghePgr + ' no PGR' : '') })),
         h('div', { class: 'pm-linha' }, chipsM,
           h('button', { type: 'button', class: 'pm add', title: 'Incluir outro método', text: '+', onclick: () => incluir(l) })),
         det.length ? h('details', { class: 'pf-det' }, h('summary', { text: 'Detalhes' }), det) : null));
@@ -1414,7 +1422,9 @@ async function telaRegistro(app, id) {
     const inpGhe = h('input', { class: 'inp', value: reg.ghe || '', placeholder: 'automático pela seção', readonly: true, tabindex: -1, title: 'GHE pela seção do quadro de lotação' });
     const mostrarInfo = () => {
       const n = alocadosDe(reg.filial, reg.secao, reg.funcao);
-      info.textContent = (n !== '' && reg.funcao) ? 'Alocados no QL: ' + n : '';
+      const lq = linhasQl(reg.filial).find(x => x[0] === reg.filial && x[2] === reg.secao && x[3] === reg.funcao);
+      const lim = lq ? Number(lq[6]) || 0 : 0;
+      info.textContent = (n !== '' && reg.funcao) ? 'No QL: ' + n + ' alocado(s)' + (lim > Number(n) ? ' e ' + (lim - Number(n)) + ' vaga(s) em aberto' : '') : '';
     };
     const encherFuncoes = () => {
       selFun.innerHTML = '';
