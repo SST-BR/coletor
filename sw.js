@@ -1,5 +1,7 @@
 /* Service worker: guarda a "casca" do aplicativo para abrir sem internet. Não guarda dados. */
-const VERSAO = 'coletor-v1.8.1';
+// O app de teste (/coletor/teste/) usa o prefixo coletor-teste-v; cada um apaga só os seus caches antigos.
+const PREFIXO = /\/teste\//.test(self.location.pathname) ? 'coletor-teste-v' : 'coletor-v';
+const VERSAO = PREFIXO + '1.8.2';
 const ARQUIVOS = ['./', './index.html', './app.css', './app.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
 
@@ -9,7 +11,7 @@ self.addEventListener('install', e => {
 });
 
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSAO).map(k => caches.delete(k))))
+  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSAO && k.startsWith(PREFIXO)).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -21,8 +23,8 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return; // servidor (Apps Script) nunca passa pelo cache
   if (req.mode === 'navigate') {
-    e.respondWith(caches.match('./index.html').then(r => r || fetch(req)));
+    e.respondWith(caches.open(VERSAO).then(c => c.match('./index.html')).then(r => r || fetch(req)));
     return;
   }
-  e.respondWith(caches.match(req, { ignoreSearch: true }).then(r => r || fetch(req)));
+  e.respondWith(caches.open(VERSAO).then(c => c.match(req, { ignoreSearch: true })).then(r => r || fetch(req)));
 });

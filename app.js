@@ -6,7 +6,9 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.8.1';
+const VERSAO_APP = '1.8.2';
+// Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
+const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -14,7 +16,7 @@ const DB = (() => {
   let p;
   function abrir() {
     if (!p) p = new Promise((res, rej) => {
-      const r = indexedDB.open('coletor-campo', 1);
+      const r = indexedDB.open(AMBIENTE === 'TESTE' ? 'coletor-campo-teste' : 'coletor-campo', 1);
       r.onupgradeneeded = () => {
         const d = r.result;
         d.createObjectStore('registros', { keyPath: 'id' });
@@ -448,7 +450,7 @@ async function telaEntrar(app, param) {
 
 /** Chamada sem sessão (login e ativação). */
 async function api0(corpo) {
-  const r = await fetch(S.ajustes.url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(corpo) });
+  const r = await fetch(S.ajustes.url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({}, corpo, { ambiente: AMBIENTE })) });
   const j = JSON.parse(await r.text());
   if (!j.ok) { const e = new Error(j.erro || 'Erro no servidor.'); e.codigo = j.codigo; throw e; }
   return j;
@@ -470,7 +472,7 @@ async function api(corpo, tempo) {
     const r = await fetch(S.ajustes.url, {
       method: 'POST', redirect: 'follow', signal: ctl.signal,
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({}, corpo, S.ajustes.chave ? { chave: S.ajustes.chave } : { token: S.ajustes.token }))
+      body: JSON.stringify(Object.assign({}, corpo, { ambiente: AMBIENTE }, S.ajustes.chave ? { chave: S.ajustes.chave } : { token: S.ajustes.token }))
     });
     const txt = await r.text();
     let j;
@@ -2944,6 +2946,7 @@ async function iniciar() {
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.instalar = e; if (!location.hash || location.hash === '#/') rotear(); });
   setInterval(() => { if (navigator.onLine && !S.sinc && document.visibilityState === 'visible') sincronizar(false); }, 120000);
 
+  if (AMBIENTE === 'TESTE') { document.body.classList.add('modo-teste'); document.title = 'TESTE - Coletor de Campo'; }
   if ('serviceWorker' in navigator && !window.SERVIDOR_DEMO) {
     try {
       const reg = await navigator.serviceWorker.register('./sw.js');
