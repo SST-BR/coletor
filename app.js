@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.8.0';
+const VERSAO_APP = '1.8.1';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
 
 /* ============================== BANCO LOCAL ============================== */
@@ -1158,14 +1158,35 @@ async function telaDocumentos(app) {
       h('p', { class: 'peq', text: 'É o período que aparece nos documentos. A data e a hora de cada alteração dos registros ficam só na planilha, para consulta, e não vão para os documentos. Se deixar em branco, o documento usa os dias das aberturas de visita.' })));
     const chkRiscos = h('input', { type: 'checkbox', checked: !!opcoesDocs.riscosNovos, onchange: e => { opcoesDocs.riscosNovos = e.target.checked; guardarOpcoes(); } });
     if (podeDocs) caixaGerar.appendChild(h('label', { class: 'flag' }, chkRiscos, 'Incluir na AET os riscos para revisão do PGR' + (dados && dados.revisaoPGR !== null && dados.revisaoPGR !== undefined ? ' (' + dados.revisaoPGR + ' hoje)' : '')));
+    // Instrumentos de medição na AET (padrão: completo)
+    const modoInstr = opcoesDocs.instr || 'COMPLETO';
+    const selInstr = h('select', { class: 'inp', onchange: e => { opcoesDocs.instr = e.target.value; guardarOpcoes(); chkCert.disabled = e.target.value !== 'COMPLETO'; } },
+      [['COMPLETO', 'Completo (certificado e validade)'], ['IDENTIFICACAO', 'Só identificação (sem certificado)'], ['NENHUM', 'Não incluir']]
+        .map(([v, t]) => h('option', { value: v, text: t, selected: v === modoInstr })));
+    const chkCert = h('input', { type: 'checkbox', checked: !!opcoesDocs.anexoCert, disabled: modoInstr !== 'COMPLETO', onchange: e => { opcoesDocs.anexoCert = e.target.checked; guardarOpcoes(); } });
+    const instrs = (dados && dados.instrumentos) || [];
+    if (podeDocs) {
+      caixaGerar.appendChild(h('label', { class: 'rot', text: 'Instrumentos de medição na AET' }));
+      caixaGerar.appendChild(selInstr);
+      caixaGerar.appendChild(h('label', { class: 'flag' }, chkCert, 'Anexar ao final da AET as cópias dos certificados de calibração'));
+      caixaGerar.appendChild(h('p', { class: 'peq', text: instrs.length ? 'Entram só os instrumentos usados nas medições desta filial: ' + instrs.map(i => i.tipo + (i.serie ? ' (série ' + i.serie + ')' : '')).join('; ') + '.' : 'Nenhuma medição com instrumento registrada nesta filial até agora.' }));
+      const comAlerta = instrs.filter(i => (i.alertas || []).length);
+      if (comAlerta.length) caixaGerar.appendChild(h('div', { class: 'cartao alerta' }, h('strong', { text: 'Confira antes de gerar (aviso só para você, não vai no documento)' }),
+        h('ul', null, comAlerta.map(i => h('li', { text: i.tipo + (i.serie ? ' série ' + i.serie : '') + ': ' + i.alertas.join('; ') })))));
+    }
+    const alertaInstr = () => {
+      const c = instrs.filter(i => (i.alertas || []).length);
+      if (!c.length || selInstr.value === 'NENHUM') return true;
+      return confirm('Há instrumento com pendência de calibração:\n\n' + c.map(i => '- ' + i.tipo + (i.serie ? ' série ' + i.serie : '') + ': ' + i.alertas.join('; ')).join('\n') + '\n\nO aviso não vai no documento. Gerar mesmo assim?');
+    };
     const emissao = () => {
       const v = inpEmissao.value;
       if (!v) return hojeIso();
       if (v > hojeIso()) { toast('A data de emissão não pode ser futura.'); return null; }
       return v;
     };
-    const extras = () => ({ periodoIni: inpIni.value, periodoFim: inpFim.value, incluirRiscosNovos: chkRiscos.checked });
-    if (podeDocs) caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d) gerar(Object.assign({ tipo: 'AET', dataEmissao: d }, extras())); } }));
+    const extras = () => ({ periodoIni: inpIni.value, periodoFim: inpFim.value, incluirRiscosNovos: chkRiscos.checked, instrumentos: selInstr.value, anexarCertificados: selInstr.value === 'COMPLETO' && chkCert.checked });
+    if (podeDocs) caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d && alertaInstr()) gerar(Object.assign({ tipo: 'AET', dataEmissao: d }, extras())); } }));
     const secoes = (dados && dados.secoes && dados.secoes.length) ? dados.secoes : secoesDe(fil);
     const selSec = h('select', { class: 'inp' }, h('option', { value: '', text: 'Escolha a seção' }), secoes.map(x => h('option', { value: x, text: x })));
     const recortes = (dados && dados.recortes) || ['Completo', 'Ergonomia', 'Conforto ambiental', 'Não conformidades e plano de ação'];
