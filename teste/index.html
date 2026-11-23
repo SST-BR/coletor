@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#5b3a8c">
+  <meta name="robots" content="noindex, nofollow">
+  <title>TESTE - Coletor de Campo</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <script>try{var t=localStorage.getItem('tema')||'auto';if(t==='escuro'||(t==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.dataset.tema='escuro';}catch(e){}</script>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header id="topo">
+    <button id="voltar" class="ic" aria-label="Voltar" hidden>&#8592;</button>
+    <div id="titulo">Coletor de Campo TESTE</div>
+    <button id="status" class="status" aria-label="Sincronizar"></button>
+  </header>
+  <div id="aviso" hidden></div>
+  <main id="app"></main>
+  <nav id="nav">
+    <a href="#/" data-r="inicio"><span>&#8962;</span>Início</a>
+    <a href="#/registros" data-r="registros"><span>&#9776;</span>Registros</a>
+    <a href="#/plano" data-r="plano"><span>&#9638;</span>Plano</a>
+    <a href="#/docs" data-r="docs"><span>&#128196;</span>Documentos</a>
+    <a href="#/ajustes" data-r="ajustes"><span>&#9881;</span>Ajustes</a>
+  </nav>
+  <div id="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
