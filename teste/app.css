@@ -530,3 +530,4 @@ main { padding: 16px 14px 120px; }
 }
 
 .atalhos.tres { grid-template-columns: repeat(3, 1fr); }
+.rosto-ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; } .rosto-ctl .gonio-barra { flex: 1; min-width: 140px; width: auto; }

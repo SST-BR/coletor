@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.1';
+const VERSAO_APP = '1.9.2';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -3005,6 +3005,8 @@ function marcarPontosGonio(fonte, anterior) {
   return new Promise(resolve => {
     const W = fonte.width, H = fonte.height;
     const P = {}; let atual = 0, frente = (anterior && anterior.frente) || 1, arrastando = null;
+    // Círculos que cobrem o rosto (privacidade): ficam gravados na imagem final, borrados em mosaico.
+    const rostos = []; let modoRosto = false, selRosto = -1, arrRosto = null;
     if (anterior && anterior.pontos) Object.keys(anterior.pontos).forEach(k => { const p = anterior.pontos[k]; if (p) P[k] = { x: p.x * W, y: p.y * H }; });
     while (atual < GONIO_PONTOS.length && P[GONIO_PONTOS[atual].k]) atual++;
     const cv = h('canvas', { class: 'gonio-cv' }); cv.width = W; cv.height = H;
@@ -3012,9 +3014,22 @@ function marcarPontosGonio(fonte, anterior) {
     const instr = h('p', { class: 'gonio-instr' });
     const res = h('div', { class: 'gonio-res' });
     const escala = () => W / cv.getBoundingClientRect().width;
+    function cobrirRosto(ctx, c) {
+      const bloco = Math.max(6, Math.round(c.r / 3)), n = Math.max(2, Math.round(2 * c.r / bloco));
+      const t = document.createElement('canvas'); t.width = n; t.height = n;
+      t.getContext('2d').drawImage(fonte, c.x - c.r, c.y - c.r, 2 * c.r, 2 * c.r, 0, 0, n, n);
+      ctx.save(); ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.clip();
+      ctx.imageSmoothingEnabled = false; ctx.drawImage(t, 0, 0, n, n, c.x - c.r, c.y - c.r, 2 * c.r, 2 * c.r);
+      ctx.fillStyle = 'rgba(40,40,60,.25)'; ctx.fill(); ctx.restore();
+    }
     function desenhar(ctx, final) {
       const e = Math.max(W, H) / 900;
       ctx.drawImage(fonte, 0, 0, W, H);
+      rostos.forEach((c, i) => {
+        cobrirRosto(ctx, c);
+        if (!final) { ctx.save(); ctx.setLineDash([8 * e, 6 * e]); ctx.lineWidth = 3 * e; ctx.strokeStyle = i === selRosto && modoRosto ? '#fbbf24' : 'rgba(255,255,255,.85)';
+          ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+      });
       ctx.lineCap = 'round';
       GONIO_LINHAS.forEach(([a, b]) => { if (P[a] && P[b]) { ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 7 * e; ctx.beginPath(); ctx.moveTo(P[a].x, P[a].y); ctx.lineTo(P[b].x, P[b].y); ctx.stroke();
         ctx.strokeStyle = a === 'quadril' ? '#ffd54a' : '#38e0c8'; ctx.lineWidth = 4 * e; ctx.stroke(); } });
@@ -3045,17 +3060,28 @@ function marcarPontosGonio(fonte, anterior) {
     function atualizar() {
       const a = desenhar(g, false);
       instr.innerHTML = '';
-      if (atual < GONIO_PONTOS.length) instr.append('Toque no ', h('strong', { text: GONIO_PONTOS[atual].n }), ' (' + GONIO_PONTOS[atual].d + '). Ponto ' + (atual + 1) + ' de ' + GONIO_PONTOS.length + '.');
+      btRosto.textContent = modoRosto ? '✓ Pronto (voltar aos pontos)' : '🙂 Ocultar rosto' + (rostos.length ? ' (' + rostos.length + ')' : '');
+      btRosto.className = 'bt pequeno' + (modoRosto ? '' : ' sec');
+      caixaRosto.hidden = !modoRosto;
+      if (modoRosto) { instr.append(rostos.length ? 'Arraste o círculo até o rosto e ajuste o tamanho. Toque em outro rosto para cobrir mais um.' : 'Toque no rosto da pessoa para cobri-lo.');
+        if (selRosto >= 0 && rostos[selRosto]) tamRosto.value = Math.round(rostos[selRosto].r / Math.max(W, H) * 100); }
+      else if (atual < GONIO_PONTOS.length) instr.append('Toque no ', h('strong', { text: GONIO_PONTOS[atual].n }), ' (' + GONIO_PONTOS[atual].d + '). Ponto ' + (atual + 1) + ' de ' + GONIO_PONTOS.length + '.');
       else instr.append('Pontos marcados. Arraste um ponto para ajustar, ou toque em Concluir.');
       const f = faixasRULA(a);
       res.innerHTML = '';
       Object.keys(GONIO_NOMES).forEach(k => { if (a[k] === undefined) return;
         res.appendChild(h('span', { class: 'gonio-chip' }, h('strong', { text: GONIO_NOMES[k] + ' ' + Math.round(Math.abs(a[k])) + '°' }), ' ' + f[k].t + ' → ' + f[k].n)); });
-      btPular.hidden = atual >= GONIO_PONTOS.length;
+      btPular.hidden = modoRosto || atual >= GONIO_PONTOS.length;
     }
     const pos = e => { const r = cv.getBoundingClientRect(), k = escala(); return { x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k }; };
     cv.addEventListener('pointerdown', e => {
       e.preventDefault();
+      if (modoRosto) {
+        const q = pos(e), i = rostos.findIndex(c => Math.hypot(c.x - q.x, c.y - q.y) <= c.r);
+        if (i >= 0) { selRosto = i; arrRosto = { dx: q.x - rostos[i].x, dy: q.y - rostos[i].y }; cv.setPointerCapture(e.pointerId); }
+        else { rostos.push({ x: q.x, y: q.y, r: Math.round(Math.max(W, H) * 0.07) }); selRosto = rostos.length - 1; }
+        atualizar(); return;
+      }
       const p = pos(e), raio = (atual < GONIO_PONTOS.length ? 10 : 26) * escala(); // marcando: só pega um ponto se tocar bem em cima dele
       const perto = GONIO_PONTOS.map(pt => pt.k).filter(k => P[k]).find(k => Math.hypot(P[k].x - p.x, P[k].y - p.y) < raio);
       if (perto) { arrastando = perto; cv.setPointerCapture(e.pointerId); return; }
@@ -3064,13 +3090,22 @@ function marcarPontosGonio(fonte, anterior) {
       while (atual < GONIO_PONTOS.length && P[GONIO_PONTOS[atual].k]) atual++;
       atualizar();
     });
-    cv.addEventListener('pointermove', e => { if (!arrastando) return; P[arrastando] = pos(e); atualizar(); });
-    cv.addEventListener('pointerup', () => { arrastando = null; });
+    cv.addEventListener('pointermove', e => {
+      if (arrRosto && selRosto >= 0) { const q = pos(e); rostos[selRosto].x = q.x - arrRosto.dx; rostos[selRosto].y = q.y - arrRosto.dy; atualizar(); return; }
+      if (!arrastando) return; P[arrastando] = pos(e); atualizar(); });
+    cv.addEventListener('pointerup', () => { arrastando = null; arrRosto = null; });
+    const btRosto = h('button', { type: 'button', class: 'bt sec pequeno', onclick: () => {
+      modoRosto = !modoRosto;
+      if (modoRosto && !rostos.length && P.orelha) { rostos.push({ x: P.orelha.x + frente * Math.max(W, H) * 0.02, y: P.orelha.y, r: Math.round(Math.max(W, H) * 0.07) }); selRosto = 0; }
+      atualizar(); } });
+    const tamRosto = h('input', { type: 'range', min: 2, max: 30, value: 7, class: 'gonio-barra', oninput: e => { if (selRosto >= 0 && rostos[selRosto]) { rostos[selRosto].r = Math.round(Number(e.target.value) / 100 * Math.max(W, H)); atualizar(); } } });
+    const caixaRosto = h('div', { class: 'rosto-ctl' }, h('span', { class: 'peq', text: 'Tamanho do círculo' }), tamRosto,
+      h('button', { type: 'button', class: 'bt sec pequeno', text: 'Remover círculo', onclick: () => { if (selRosto >= 0) { rostos.splice(selRosto, 1); selRosto = rostos.length - 1; atualizar(); } } }));
     const btPular = h('button', { class: 'bt sec pequeno', text: 'Pular este ponto', onclick: () => { if (atual < GONIO_PONTOS.length) { atual++; atualizar(); } } });
     const lado = chips(['◀ Virada para a esquerda', 'Virada para a direita ▶'], frente === 1 ? 'Virada para a direita ▶' : '◀ Virada para a esquerda', false, v => { frente = /esquerda/.test(v) ? -1 : 1; atualizar(); });
     const fechar = modal(h('div', { class: 'gonio-box' },
-      h('div', { class: 'gonio-topo' }, h('span', { class: 'peq', text: 'A pessoa na foto está' }), lado),
-      instr, h('div', { class: 'gonio-area' }, cv), res,
+      h('div', { class: 'gonio-topo' }, h('span', { class: 'peq', text: 'A pessoa na foto está' }), lado, btRosto),
+      instr, caixaRosto, h('div', { class: 'gonio-area' }, cv), res,
       h('div', { class: 'linha-bts' }, btPular,
         h('button', { class: 'bt sec pequeno', text: 'Desfazer', onclick: () => {
           for (let i = GONIO_PONTOS.length - 1; i >= 0; i--) if (P[GONIO_PONTOS[i].k]) { delete P[GONIO_PONTOS[i].k]; atual = i; break; }
