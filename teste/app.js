@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.2';
+const VERSAO_APP = '1.9.3';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -1760,7 +1760,8 @@ async function telaPainel(app) {
         barra(s.pct, corPct(s.pct)),
         aberto ? h('div', { class: 'sec-det' },
           s.funcoes.length ? s.funcoes.map(f => h('div', { class: 'sf' }, h('strong', { text: f.l.funcao }),
-            h('div', { class: 'sf-met' }, f.pend.map(x => h('span', { class: 'pm-mini ' + (x.st === 'NA_AGUARDANDO' ? 'aguard' : 'pend'), text: x.m.curto }))))) : h('p', { class: 'peq', text: 'Nada pendente nesta seção.' }),
+            h('div', { class: 'sf-met' }, f.pend.map(x => h('button', { type: 'button', class: 'pm-mini ' + (x.st === 'NA_AGUARDANDO' ? 'aguard' : 'pend'), title: x.st === 'NA_AGUARDANDO' ? 'Validar o "não se aplica"' : 'Abrir ' + x.m.nome + ' já com a seção e a função', text: x.m.curto + ' ›',
+            onclick: () => abrirPendencia(f.l, x) }))))) : h('p', { class: 'peq', text: 'Nada pendente nesta seção.' }),
           h('button', { class: 'bt sec', text: 'Abrir esta seção no plano', onclick: async () => { await DB.kvSet('planoFiltro', { modo: 'pend', secao: s.secao }); location.hash = '#/plano'; } })) : null));
     });
     if (!C.secoes.length) lista.appendChild(h('p', { class: 'vazio', text: 'Nenhuma função com trabalhador ou vaga.' }));
@@ -1781,6 +1782,14 @@ async function telaPainel(app) {
     outrasFiliais();
     area.appendChild(h('p', { class: 'peq centro', text: 'Plano atualizado em ' + dataHoraBr(P.baixadoEm) + '. Avaliações feitas neste aparelho e ainda não enviadas já contam.' }));
     area.appendChild(h('button', { class: 'bt sec larga', text: 'Atualizar do servidor', onclick: async () => { toast('Atualizando...', 15000); if (qtdPendentes()) await sincronizar(false); P = await carregarPlanoFilial(fil, true); toast('Painel atualizado.'); desenhar(); } }));
+  }
+  /** Toque num método pendente: abre o formulário já com a seção e a função (ou a validação, se aguarda). */
+  function abrirPendencia(l, x) {
+    if (x.st === 'NA_AGUARDANDO') { location.hash = '#/docs'; return; }
+    if (!perm('coletar')) { toast('Seu perfil não registra avaliações.'); return; }
+    const rasc = registrosVisiveis().find(r => r.form === x.m.form && r.filial === fil && r.status !== 'concluido' && secaoNorm(r.secao) === secaoNorm(l.secao) && semAcento(r.funcao).trim() === semAcento(l.funcao).trim());
+    if (rasc) { toast('Abrindo o rascunho que já existe para esta função.'); location.hash = '#/r/' + rasc.id; return; }
+    novoRegistro(x.m.form, { secao: l.secao, funcao: l.funcao });
   }
   function kpi(ic, v, t, cls) { return h('div', { class: 'kpi ' + cls }, h('span', { class: 'kpi-ic', text: ic }), h('strong', { text: String(v) }), h('small', { text: t })); }
 
