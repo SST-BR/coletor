@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.0';
+const VERSAO_APP = '1.9.1';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -688,6 +688,7 @@ function atualizarStatus() {
 }
 
 function definirTopo(titulo, comVoltar) {
+  const itPainel = $('#nav a[data-r="painel"]'); if (itPainel) itPainel.hidden = !ehAdmin();
   $('#titulo').textContent = titulo;
   $('#voltar').hidden = !comVoltar;
   const r0 = location.hash.replace('#/', '').split('/');
@@ -719,7 +720,7 @@ async function rotear() {
   if (rota[0] === 'ajustes') return telaAjustes(app);
   if (rota[0] === 'docs') return telaDocumentos(app);
   if (rota[0] === 'plano') return telaPlano(app);
-  if (rota[0] === 'painel') return telaPainel(app);
+  if (rota[0] === 'painel') return ehAdmin() ? telaPainel(app) : telaInicio(app);
   return telaInicio(app);
 }
 
@@ -764,9 +765,9 @@ h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros
       h('small', { text: saudacao() + (S.ajustes.avaliador ? ', ' + primeiroNome(S.ajustes.avaliador) : '') + ' · ' + dataExtenso() }),
       h('h2', { text: 'Andamento da filial ' + fil }),
       h('p', { class: 'hero-sub', text: 'Carregando o plano...' }),
-      h('span', { class: 'hero-link', text: 'Ver painel completo ›' }));
+      h('span', { class: 'hero-link', text: ehAdmin() ? 'Ver painel completo ›' : 'Abrir o plano de avaliação ›' }));
     const lado = h('div', { class: 'hero-anel' }, anel(0, { tam: 108, esp: 11, rot: 'obrigatórios', cls: 'claro' }));
-    app.appendChild(h('a', { class: 'hero hero-ini', href: '#/painel' }, txt, lado));
+    app.appendChild(h('a', { class: 'hero hero-ini', href: ehAdmin() ? '#/painel' : '#/plano' }, txt, lado));
     (async () => {
       const P = await DB.kvGet('plano:' + fil);
       const sub = txt.querySelector('.hero-sub');
@@ -775,9 +776,9 @@ h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros
       sub.textContent = g.pend ? g.pend + ' avaliações obrigatórias pendentes' + (g.aguard ? ' · ' + g.aguard + ' aguardando validação' : '') : 'Obrigatórios concluídos' + (g.aguard ? ' · ' + g.aguard + ' aguardando validação' : '');
       lado.innerHTML = ''; lado.appendChild(anel(g.pct, { tam: 108, esp: 11, rot: 'obrigatórios', cls: 'claro' }));
     })();
-    app.appendChild(h('div', { class: 'atalhos' },
+    app.appendChild(h('div', { class: 'atalhos' + (ehAdmin() ? '' : ' tres') },
       h('a', { class: 'atalho', href: '#/plano' }, h('span', { text: '🗺️' }), 'Plano'),
-      h('a', { class: 'atalho', href: '#/painel' }, h('span', { text: '📊' }), 'Painel'),
+      ehAdmin() ? h('a', { class: 'atalho', href: '#/painel' }, h('span', { text: '📊' }), 'Painel') : null,
       h('a', { class: 'atalho', href: '#/registros' }, h('span', { text: '🗂️' }), 'Registros'),
       h('a', { class: 'atalho', href: '#/docs' }, h('span', { text: '📄' }), 'Documentos')));
   }
@@ -1519,7 +1520,7 @@ async function telaPlano(app) {
     const modos = [['pend', 'Com pendência'], ['vaga', 'Com vaga em aberto'], ['todas', 'Todas']];
     topo.appendChild(h('div', { class: 'linha-sel' }, selSec,
       h('div', { class: 'chips' }, modos.map(([k, t]) => h('button', { type: 'button', class: 'chip' + (filtro.modo === k ? ' on' : ''), text: t, onclick: () => { filtro.modo = k; DB.kvSet('planoFiltro', filtro); desenhar(); } })))));
-    topo.appendChild(h('div', { class: 'linha-bts' }, h('a', { class: 'bt', href: '#/painel', text: '📊 Painel de andamento' }), h('button', { class: 'bt sec', text: 'Atualizar do servidor', onclick: () => carregar(true) })));
+    topo.appendChild(h('div', { class: 'linha-bts' }, ehAdmin() ? h('a', { class: 'bt', href: '#/painel', text: '📊 Painel de andamento' }) : null, h('button', { class: 'bt sec', text: 'Atualizar do servidor', onclick: () => carregar(true) })));
 
     const vis = P.linhas.filter(l => {
       if (filtro.secao && l.secao !== filtro.secao) return false;

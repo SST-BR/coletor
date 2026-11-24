@@ -528,3 +528,5 @@ main { padding: 16px 14px 120px; }
   .barra-fim { left: 232px; bottom: 0; }
   .hero { padding: 26px 30px; }
 }
+
+.atalhos.tres { grid-template-columns: repeat(3, 1fr); }
