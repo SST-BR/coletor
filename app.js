@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.8.2';
+const VERSAO_APP = '1.9.1';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -688,6 +688,7 @@ function atualizarStatus() {
 }
 
 function definirTopo(titulo, comVoltar) {
+  const itPainel = $('#nav a[data-r="painel"]'); if (itPainel) itPainel.hidden = !ehAdmin();
   $('#titulo').textContent = titulo;
   $('#voltar').hidden = !comVoltar;
   const r0 = location.hash.replace('#/', '').split('/');
@@ -719,6 +720,7 @@ async function rotear() {
   if (rota[0] === 'ajustes') return telaAjustes(app);
   if (rota[0] === 'docs') return telaDocumentos(app);
   if (rota[0] === 'plano') return telaPlano(app);
+  if (rota[0] === 'painel') return ehAdmin() ? telaPainel(app) : telaInicio(app);
   return telaInicio(app);
 }
 
@@ -756,20 +758,29 @@ h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros
   if (!S.ajustes.avaliador) app.appendChild(h('div', { class: 'cartao alerta' },
     h('strong', { text: 'Informe seu nome em Ajustes > Avaliador.' }),
     h('p', { class: 'peq', text: 'Quando duas ou mais pessoas trabalham na mesma filial, é o nome que mostra quem fez cada levantamento.' })));
-  if (equipe.length) app.appendChild(h('div', { class: 'cartao equipe' },
-    h('div', { class: 'eq-cab' }, h('strong', { text: 'Equipe nesta filial' }), h('small', { text: 'Tudo o que cada um registra entra nos mesmos documentos' })),
-    h('div', { class: 'eq-lista' }, equipe.map(p => h('div', { class: 'eq-pessoa' + (p.nome === S.ajustes.avaliador ? ' eu' : '') },
-      h('span', { class: 'eq-ini', text: iniciais(p.nome) }),
-      h('div', null, h('strong', { text: p.nome + (p.nome === S.ajustes.avaliador ? ' (você)' : '') }),
-        h('small', { text: p.n + ' registro(s) · ' + p.grupos.map(g => GRUPO_VISUAL(g).curto).join(', ') + ' · último ' + dataHoraBr(p.ultimo) })))))));
-
-  // Plano de avaliação da filial
+  // Andamento da filial (abre o painel) e atalhos
   if (S.ctx.filial) {
-    const pc = S.planoResumo && S.planoResumo.filial === S.ctx.filial ? S.planoResumo : null;
-    app.appendChild(h('a', { class: 'cartao plano-atalho', href: '#/plano' },
-      h('span', { class: 'tile-ic', text: '🗺️' }),
-      h('div', null, h('strong', { text: 'Plano de avaliação da filial' }),
-        h('small', { text: pc ? (pc.pendentes ? pc.pendentes + ' avaliação(ões) pendente(s) em ' + pc.comTrab + ' funções com trabalhador ou vaga' : 'Nenhuma avaliação pendente') : 'O que avaliar em cada função, a partir do PGR' }))));
+    const fil = S.ctx.filial;
+    const txt = h('div', { class: 'hero-txt' },
+      h('small', { text: saudacao() + (S.ajustes.avaliador ? ', ' + primeiroNome(S.ajustes.avaliador) : '') + ' · ' + dataExtenso() }),
+      h('h2', { text: 'Andamento da filial ' + fil }),
+      h('p', { class: 'hero-sub', text: 'Carregando o plano...' }),
+      h('span', { class: 'hero-link', text: ehAdmin() ? 'Ver painel completo ›' : 'Abrir o plano de avaliação ›' }));
+    const lado = h('div', { class: 'hero-anel' }, anel(0, { tam: 108, esp: 11, rot: 'obrigatórios', cls: 'claro' }));
+    app.appendChild(h('a', { class: 'hero hero-ini', href: ehAdmin() ? '#/painel' : '#/plano' }, txt, lado));
+    (async () => {
+      const P = await DB.kvGet('plano:' + fil);
+      const sub = txt.querySelector('.hero-sub');
+      if (!P) { sub.textContent = 'Abra o plano com internet para calcular o andamento.'; return; }
+      const g = calcPlano(P, fil).geral;
+      sub.textContent = g.pend ? g.pend + ' avaliações obrigatórias pendentes' + (g.aguard ? ' · ' + g.aguard + ' aguardando validação' : '') : 'Obrigatórios concluídos' + (g.aguard ? ' · ' + g.aguard + ' aguardando validação' : '');
+      lado.innerHTML = ''; lado.appendChild(anel(g.pct, { tam: 108, esp: 11, rot: 'obrigatórios', cls: 'claro' }));
+    })();
+    app.appendChild(h('div', { class: 'atalhos' + (ehAdmin() ? '' : ' tres') },
+      h('a', { class: 'atalho', href: '#/plano' }, h('span', { text: '🗺️' }), 'Plano'),
+      ehAdmin() ? h('a', { class: 'atalho', href: '#/painel' }, h('span', { text: '📊' }), 'Painel') : null,
+      h('a', { class: 'atalho', href: '#/registros' }, h('span', { text: '🗂️' }), 'Registros'),
+      h('a', { class: 'atalho', href: '#/docs' }, h('span', { text: '📄' }), 'Documentos')));
   }
 
   // Menus por grupo (botões coloridos)
@@ -788,9 +799,19 @@ h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros
       quem.length ? h('span', { class: 'tile-quem' }, quem.slice(0, 4).map(n => h('span', { class: 'eq-ini mini', title: n, text: iniciais(n) }))) : null));
   });
   app.appendChild(grade);
+  if (equipe.length) app.appendChild(h('div', { class: 'cartao equipe' },
+    h('div', { class: 'eq-cab' }, h('strong', { text: 'Equipe nesta filial' }), h('small', { text: 'Tudo o que cada um registra entra nos mesmos documentos' })),
+    h('div', { class: 'eq-lista' }, equipe.map(p => h('div', { class: 'eq-pessoa' + (p.nome === S.ajustes.avaliador ? ' eu' : '') },
+      h('span', { class: 'eq-ini', text: iniciais(p.nome) }),
+      h('div', null, h('strong', { text: p.nome + (p.nome === S.ajustes.avaliador ? ' (você)' : '') }),
+        h('small', { text: p.n + ' registro(s) · ' + p.grupos.map(g => GRUPO_VISUAL(g).curto).join(', ') + ' · último ' + dataHoraBr(p.ultimo) })))))));
+
 }
 
 /* ======================= GRUPOS, CORES E EQUIPE ======================= */
+function saudacao() { const hr = new Date().getHours(); return hr < 12 ? 'Bom dia' : hr < 18 ? 'Boa tarde' : 'Boa noite'; }
+function primeiroNome(n) { return String(n || '').trim().split(/\s+/)[0].toLowerCase().replace(/^./, c => c.toUpperCase()); }
+function dataExtenso() { try { return new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }); } catch (e) { return ''; } }
 function GRUPO_VISUAL(g) {
   const k = String(g || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   if (k.includes('prepar')) return { cor: 1, ic: '🧰', curto: 'Preparação' };
@@ -1499,7 +1520,7 @@ async function telaPlano(app) {
     const modos = [['pend', 'Com pendência'], ['vaga', 'Com vaga em aberto'], ['todas', 'Todas']];
     topo.appendChild(h('div', { class: 'linha-sel' }, selSec,
       h('div', { class: 'chips' }, modos.map(([k, t]) => h('button', { type: 'button', class: 'chip' + (filtro.modo === k ? ' on' : ''), text: t, onclick: () => { filtro.modo = k; DB.kvSet('planoFiltro', filtro); desenhar(); } })))));
-    topo.appendChild(h('button', { class: 'bt sec larga', text: 'Atualizar do servidor', onclick: () => carregar(true) }));
+    topo.appendChild(h('div', { class: 'linha-bts' }, ehAdmin() ? h('a', { class: 'bt', href: '#/painel', text: '📊 Painel de andamento' }) : null, h('button', { class: 'bt sec', text: 'Atualizar do servidor', onclick: () => carregar(true) })));
 
     const vis = P.linhas.filter(l => {
       if (filtro.secao && l.secao !== filtro.secao) return false;
@@ -1588,6 +1609,210 @@ async function telaPlano(app) {
   }
   desenhar();
   carregar(false);
+}
+
+/* ============================ PAINEL DE ANDAMENTO ============================ */
+/** Blocos de tema do plano (métodos agrupados como aparecem na AET). */
+const BLOCOS_PLANO = [
+  { id: 'base', nome: 'Avaliação básica (AEP)', ic: '🧭', cor: 1, cods: ['ATIVIDADE', 'ORGANIZACAO', 'PARTICIPACAO'] },
+  { id: 'cargas', nome: 'Cargas e força', ic: '📦', cor: 3, cods: ['KIM'] },
+  { id: 'postura', nome: 'Postura e repetitividade', ic: '🧍', cor: 4, cods: ['RULA', 'STRAIN'] },
+  { id: 'posto', nome: 'Posto de trabalho e equipamentos', ic: '🛒', cor: 2, cods: ['CHECKOUT', 'MOBILIARIO', 'FERRAMENTAS'] },
+  { id: 'ambiente', nome: 'Frio e teleatendimento', ic: '❄️', cor: 6, cods: ['FRIO', 'ANEXOII'] }
+];
+function statusPlano(m, l, fil) {
+  if ((m.status === 'PENDENTE' || m.status === 'SUGERIDO') && feitoNoAparelho(m, l, fil)) return 'LOCAL';
+  return m.status;
+}
+function pctDe(a, b) { return b ? Math.round(100 * a / b) : 100; }
+/** Números do plano: obrigatórios (PGR + avaliação básica) e sugestões de campo, por método, por bloco e por seção. */
+function calcPlano(P, fil) {
+  const novo = () => ({ tot: 0, ok: 0, na: 0, aguard: 0, pend: 0, sugTot: 0, sugOk: 0, sugNa: 0 });
+  const geral = novo(), porMet = {}, porSec = new Map();
+  (P && P.linhas || []).forEach(l => {
+    if (trabDe(l) <= 0) return;
+    const s = porSec.get(l.secao) || Object.assign(novo(), { secao: l.secao, funcoes: [] });
+    const pendF = [];
+    l.metodos.forEach(m => {
+      const st = statusPlano(m, l, fil), pm = porMet[m.cod] = porMet[m.cod] || Object.assign(novo(), { cod: m.cod, nome: m.nome, curto: m.curto });
+      [geral, pm, s].forEach(o => {
+        if (m.exig === 'CAMPO') { o.sugTot++; if (st === 'FEITO' || st === 'LOCAL') o.sugOk++; else if (st === 'NA') o.sugNa++; }
+        else {
+          o.tot++;
+          if (st === 'FEITO' || st === 'LOCAL') o.ok++; else if (st === 'NA') o.na++; else if (st === 'NA_AGUARDANDO') o.aguard++; else o.pend++;
+        }
+      });
+      if (m.exig !== 'CAMPO' && (st === 'PENDENTE' || st === 'NA_AGUARDANDO')) pendF.push({ m, st });
+    });
+    if (pendF.length) s.funcoes.push({ l, pend: pendF });
+    porSec.set(l.secao, s);
+  });
+  const fim = o => Object.assign(o, { pct: pctDe(o.ok + o.na, o.tot), pctSug: pctDe(o.ok + o.na + o.sugOk + o.sugNa, o.tot + o.sugTot) });
+  fim(geral); Object.values(porMet).forEach(fim); porSec.forEach(fim);
+  const blocos = BLOCOS_PLANO.map(b => {
+    const o = novo();
+    b.cods.forEach(c => { const pm = porMet[c]; if (pm) Object.keys(o).forEach(k => { o[k] += pm[k]; }); });
+    return Object.assign(fim(o), b, { metodos: b.cods.map(c => porMet[c]).filter(Boolean) });
+  }).filter(b => b.tot + b.sugTot > 0);
+  return { geral, blocos, secoes: [...porSec.values()].sort((a, b) => a.pct - b.pct || b.pend - a.pend) };
+}
+/** Anel de progresso (SVG). */
+function anel(pct, o) {
+  o = o || {};
+  const t = o.tam || 120, e = o.esp || 12, r = (t - e) / 2, c = 2 * Math.PI * r, p = Math.max(0, Math.min(100, pct));
+  const box = h('span', { class: 'anel' + (o.cls ? ' ' + o.cls : ''), style: 'width:' + t + 'px;height:' + t + 'px' });
+  box.innerHTML = '<svg viewBox="0 0 ' + t + ' ' + t + '" width="' + t + '" height="' + t + '"><circle cx="' + t / 2 + '" cy="' + t / 2 + '" r="' + r + '" fill="none" stroke-width="' + e + '" class="anel-trilho"/>' +
+    '<circle cx="' + t / 2 + '" cy="' + t / 2 + '" r="' + r + '" fill="none" stroke-width="' + e + '" stroke-linecap="round" class="anel-valor" stroke-dasharray="' + (c * p / 100) + ' ' + c + '" transform="rotate(-90 ' + t / 2 + ' ' + t / 2 + ')"/></svg>';
+  box.appendChild(h('span', { class: 'anel-txt' }, h('strong', { text: p + '%' }), o.rot ? h('small', { text: o.rot }) : null));
+  return box;
+}
+function barra(pct, cls) { return h('div', { class: 'barra-prog ' + (cls || '') }, h('i', { style: 'width:' + Math.max(0, Math.min(100, pct)) + '%' })); }
+function corPct(p) { return p >= 100 ? 'ok' : p >= 70 ? 'bom' : p >= 40 ? 'meio' : 'baixo'; }
+
+async function carregarPlanoFilial(fil, forcar) {
+  let P = await DB.kvGet('plano:' + fil);
+  if (navigator.onLine && (forcar || !P || Date.now() - new Date(P.baixadoEm).getTime() > 10 * 60000)) {
+    try { const j = await api({ acao: 'plano', filial: fil }, 120000); P = Object.assign(j, { baixadoEm: agoraIso() }); await DB.kvSet('plano:' + fil, P); }
+    catch (e) { if (forcar) toast(e.message, 7000); }
+  }
+  return P;
+}
+
+async function telaPainel(app) {
+  definirTopo('Painel de andamento', false);
+  const fil = S.ctx.filial;
+  if (!S.cfg || !fil) {
+    app.appendChild(h('div', { class: 'cartao destaque' }, h('p', { text: 'Escolha a filial na tela inicial.' }), h('a', { class: 'bt', href: '#/', text: 'Ir para o início' })));
+    return;
+  }
+  let P = await DB.kvGet('plano:' + fil), D = await DB.kvGet('docs:' + fil);
+  const area = h('div', { class: 'painel' });
+  app.appendChild(area);
+  const abertos = new Set();
+
+  function desenhar() {
+    area.innerHTML = '';
+    const info = filialInfo(fil);
+    if (!P) { area.appendChild(h('div', { class: 'cartao' }, h('p', { class: 'peq', text: navigator.onLine ? 'Carregando o plano da filial...' : 'Sem internet. Conecte uma vez para guardar o plano neste aparelho.' }), h('div', { class: 'girando' }))); return; }
+    const C = calcPlano(P, fil), g = C.geral;
+
+    // 1. Visão geral (macro)
+    area.appendChild(h('div', { class: 'hero' },
+      h('div', { class: 'hero-txt' },
+        h('small', { text: 'Filial ' + fil + (info && info.cidade ? ' · ' + info.cidade + (info.uf ? '/' + info.uf : '') : '') }),
+        h('h2', { text: g.pct >= 100 ? 'Obrigatórios concluídos' : 'Faltam ' + (g.pend + g.aguard) + ' avaliações obrigatórias' }),
+        h('p', { text: g.ok + ' feitas · ' + g.na + ' não se aplica · ' + g.pend + ' pendentes' + (g.aguard ? ' · ' + g.aguard + ' aguardando validação' : '') }),
+        h('div', { class: 'hero-mini' }, h('span', { text: 'Com as sugestões de campo' }), h('strong', { text: g.pctSug + '%' })),
+        barra(g.pctSug, 'clara')),
+      anel(g.pct, { tam: 128, esp: 13, rot: 'obrigatórios', cls: 'claro' })));
+
+    area.appendChild(h('div', { class: 'kpis' },
+      kpi('✅', g.ok, 'feitas', 'ok'), kpi('⏳', g.pend, 'pendentes', g.pend ? 'pend' : 'ok'),
+      kpi('🛡️', g.aguard, 'aguardando validação', g.aguard ? 'aguard' : 'ok'), kpi('💡', g.sugOk + '/' + g.sugTot, 'sugestões avaliadas', 'sug')));
+
+    // 2. Pronto para gerar a AET?
+    const itens = [];
+    itens.push({ ok: g.pend === 0, t: 'Métodos obrigatórios (PGR e avaliação básica)', d: g.pend ? g.pend + ' pendente(s)' : 'todos avaliados ou justificados', ir: '#/plano' });
+    itens.push({ ok: g.aguard === 0, t: '"Não se aplica" validados', d: g.aguard ? g.aguard + ' aguardando a validação do administrador' : 'nenhum aguardando', ir: '#/docs' });
+    if (D) {
+      const p = D.pendencias || {}, r = D.requisitos || {};
+      itens.push({ ok: !p.semLevantamento, t: 'Toda função com levantamento de campo', d: p.semLevantamento ? p.semLevantamento + ' função(ões) sem nenhum registro' : 'ok', ir: '#/docs' });
+      itens.push({ ok: !p.semAtividade, t: 'Análise da atividade em toda função', d: p.semAtividade ? p.semAtividade + ' função(ões) só com métodos' : 'ok', ir: '#/docs' });
+      itens.push({ ok: !r['Sem evidência'], t: 'Requisitos da NR-17 com evidência', d: r['Sem evidência'] ? r['Sem evidência'] + ' item(ns) sem evidência' : (r['Atende'] || 0) + ' atendidos · ' + (r['Não atende'] || 0) + ' não atendidos', ir: '#/docs' });
+      const inst = (D.instrumentos || []).filter(i => (i.alertas || []).length);
+      itens.push({ ok: !inst.length, t: 'Instrumentos com calibração válida', d: inst.length ? inst.length + ' com pendência de certificado ou validade' : (D.instrumentos || []).length + ' usado(s) nas medições', ir: '#/docs' });
+    }
+    const faltam = itens.filter(i => !i.ok).length;
+    area.appendChild(h('div', { class: 'cartao pronto ' + (faltam ? 'nao' : 'sim') },
+      h('div', { class: 'pronto-cab' },
+        h('div', null, h('h3', { text: 'Pronto para gerar a AET?' }),
+          h('small', { text: D ? 'Situação do servidor em ' + dataHoraBr(D.em) : 'Toque em "Verificar agora" para incluir pendências de campo, NR-17 e instrumentos.' })),
+        h('span', { class: 'selo ' + (faltam ? 'nao' : 'sim'), text: faltam ? 'Faltam ' + faltam : 'Pronto' })),
+      h('div', { class: 'checklist' }, itens.map(i => h('a', { class: 'ck ' + (i.ok ? 'ok' : 'falta'), href: i.ir },
+        h('span', { class: 'ck-ic', text: i.ok ? '✓' : '!' }), h('div', null, h('strong', { text: i.t }), h('small', { text: i.d })), h('span', { class: 'ck-seta', text: '›' })))),
+      h('button', { class: 'bt sec larga', text: D ? 'Verificar de novo' : 'Verificar agora', onclick: verificar })));
+
+    // 3. Por bloco de tema
+    area.appendChild(h('h3', { class: 'titulo-sec', text: 'Por bloco de tema' }));
+    const grade = h('div', { class: 'blocos' });
+    C.blocos.forEach(b => {
+      const aberto = abertos.has('b:' + b.id);
+      grade.appendChild(h('div', { class: 'bloco cor-' + b.cor + (aberto ? ' aberto' : ''), onclick: () => { aberto ? abertos.delete('b:' + b.id) : abertos.add('b:' + b.id); desenhar(); } },
+        h('div', { class: 'bloco-cab' }, h('span', { class: 'bloco-ic', text: b.ic }), h('strong', { text: b.nome }), h('span', { class: 'bloco-pct', text: b.tot ? b.pct + '%' : '-' })),
+        b.tot ? barra(b.pct, corPct(b.pct)) : null,
+        h('small', { text: (b.tot ? (b.ok + b.na) + ' de ' + b.tot + ' obrigatórias' + (b.pend ? ' · ' + b.pend + ' pendentes' : '') : 'sem itens obrigatórios') + (b.sugTot ? ' · sugestões ' + b.sugOk + '/' + b.sugTot : '') }),
+        aberto ? h('div', { class: 'bloco-met' }, b.metodos.map(m => h('div', { class: 'bm' },
+          h('span', { text: m.nome }), h('strong', { text: m.tot ? m.pct + '%' : '-' }),
+          h('small', { text: (m.tot ? (m.ok + m.na) + '/' + m.tot + (m.pend ? ' · faltam ' + m.pend : '') : '') + (m.sugTot ? (m.tot ? ' · ' : '') + 'sugestões ' + m.sugOk + '/' + m.sugTot : '') })))) : null));
+    });
+    area.appendChild(grade);
+
+    // 4. Por seção (onde concentrar esforço)
+    area.appendChild(h('h3', { class: 'titulo-sec', text: 'Por seção (menor andamento primeiro)' }));
+    const lista = h('div', { class: 'cartao secoes' });
+    C.secoes.forEach(s => {
+      const aberto = abertos.has('s:' + s.secao);
+      lista.appendChild(h('div', { class: 'sec-linha' + (aberto ? ' aberto' : '') },
+        h('button', { type: 'button', class: 'sec-cab', onclick: () => { aberto ? abertos.delete('s:' + s.secao) : abertos.add('s:' + s.secao); desenhar(); } },
+          h('div', { class: 'sec-txt' }, h('strong', { text: 'GHE - ' + s.secao }),
+            h('small', { text: (s.ok + s.na) + ' de ' + s.tot + ' obrigatórias' + (s.pend ? ' · ' + s.pend + ' pendentes' : '') + (s.aguard ? ' · ' + s.aguard + ' aguardando' : '') })),
+          h('span', { class: 'sec-pct ' + corPct(s.pct), text: s.pct + '%' })),
+        barra(s.pct, corPct(s.pct)),
+        aberto ? h('div', { class: 'sec-det' },
+          s.funcoes.length ? s.funcoes.map(f => h('div', { class: 'sf' }, h('strong', { text: f.l.funcao }),
+            h('div', { class: 'sf-met' }, f.pend.map(x => h('span', { class: 'pm-mini ' + (x.st === 'NA_AGUARDANDO' ? 'aguard' : 'pend'), text: x.m.curto }))))) : h('p', { class: 'peq', text: 'Nada pendente nesta seção.' }),
+          h('button', { class: 'bt sec', text: 'Abrir esta seção no plano', onclick: async () => { await DB.kvSet('planoFiltro', { modo: 'pend', secao: s.secao }); location.hash = '#/plano'; } })) : null));
+    });
+    if (!C.secoes.length) lista.appendChild(h('p', { class: 'vazio', text: 'Nenhuma função com trabalhador ou vaga.' }));
+    area.appendChild(lista);
+
+    // 5. Registros por tema e equipe
+    const regs = registrosVisiveis().filter(r => r.filial === fil);
+    const porGrupo = gruposForms().map(gr => { const v = GRUPO_VISUAL(gr); const fs = formularios().filter(f => f.grupo === gr).map(f => f.id); const rs = regs.filter(r => fs.includes(r.form)); return { gr, v, n: rs.length, conc: rs.filter(r => r.status === 'concluido').length }; });
+    area.appendChild(h('h3', { class: 'titulo-sec', text: 'Registros por tema' }));
+    area.appendChild(h('div', { class: 'temas' }, porGrupo.map(x => h('div', { class: 'tema cor-' + x.v.cor },
+      h('span', { class: 'tema-ic', text: x.v.ic }), h('strong', { text: String(x.n) }), h('small', { text: x.v.curto + (x.n > x.conc ? ' · ' + (x.n - x.conc) + ' rascunho' : '') })))));
+    const eq = equipeDaFilial();
+    if (eq.length) area.appendChild(h('div', { class: 'cartao equipe' }, h('h3', { text: 'Equipe nesta filial' }),
+      h('div', { class: 'eq-lista' }, eq.map(p => h('div', { class: 'eq-pessoa' + (p.nome === S.ajustes.avaliador ? ' eu' : '') },
+        h('span', { class: 'eq-ini', text: iniciais(p.nome) }), h('div', null, h('strong', { text: p.nome }), h('small', { text: p.n + ' registro(s) · último ' + dataHoraBr(p.ultimo) })))))));
+
+    // 6. Outras filiais já abertas neste aparelho
+    outrasFiliais();
+    area.appendChild(h('p', { class: 'peq centro', text: 'Plano atualizado em ' + dataHoraBr(P.baixadoEm) + '. Avaliações feitas neste aparelho e ainda não enviadas já contam.' }));
+    area.appendChild(h('button', { class: 'bt sec larga', text: 'Atualizar do servidor', onclick: async () => { toast('Atualizando...', 15000); if (qtdPendentes()) await sincronizar(false); P = await carregarPlanoFilial(fil, true); toast('Painel atualizado.'); desenhar(); } }));
+  }
+  function kpi(ic, v, t, cls) { return h('div', { class: 'kpi ' + cls }, h('span', { class: 'kpi-ic', text: ic }), h('strong', { text: String(v) }), h('small', { text: t })); }
+
+  async function outrasFiliais() {
+    const ks = (await DB.kvKeys()).filter(k => String(k).startsWith('plano:') && k !== 'plano:' + fil);
+    if (!ks.length) return;
+    const box = h('div', { class: 'cartao' }, h('h3', { text: 'Outras filiais neste aparelho' }));
+    for (const k of ks) {
+      const Q = await DB.kvGet(k), f = k.slice(6), c = calcPlano(Q, f).geral;
+      box.appendChild(h('button', { type: 'button', class: 'outra-fil', onclick: async () => { S.ctx.filial = f; await DB.kvSet('ctx', S.ctx); rotear(); } },
+        h('div', null, h('strong', { text: 'Filial ' + f }), h('small', { text: (c.ok + c.na) + ' de ' + c.tot + ' obrigatórias · atualizado ' + dataHoraBr(Q.baixadoEm) })),
+        h('span', { class: 'sec-pct ' + corPct(c.pct), text: c.pct + '%' })));
+    }
+    const ref = area.querySelector('.peq.centro');
+    area.insertBefore(box, ref);
+  }
+
+  async function verificar() {
+    if (!navigator.onLine) { toast('Sem internet.'); return; }
+    toast('Verificando a situação da filial no servidor (até 1 minuto)...', 60000);
+    try {
+      if (qtdPendentes()) await sincronizar(false);
+      const j = await api({ acao: 'docs-preparar', filial: fil }, 180000);
+      D = Object.assign(j, { em: agoraIso() }); await DB.kvSet('docs:' + fil, D);
+      P = await carregarPlanoFilial(fil, true);
+      toast('Situação atualizada.');
+    } catch (e) { toast(e.message, 7000); }
+    if (location.hash.startsWith('#/painel')) desenhar();
+  }
+
+  desenhar();
+  if (navigator.onLine) { P = await carregarPlanoFilial(fil, false); if (location.hash.startsWith('#/painel')) desenhar(); }
 }
 
 /* ================================= EDITOR ================================= */
