@@ -530,3 +530,7 @@ main { padding: 16px 14px 120px; }
 }
 
 .atalhos.tres { grid-template-columns: repeat(3, 1fr); }
+.rosto-ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; } .rosto-ctl .gonio-barra { flex: 1; min-width: 140px; width: auto; }
+button.pm-mini { border: 0; font-family: inherit; cursor: pointer; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+button.pm-mini:active { transform: scale(.95); }
+.pm, .pm-mini, .chip, .tile, .bt, .atalho, .bloco, .sec-cab { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
