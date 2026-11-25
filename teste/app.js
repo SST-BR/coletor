@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.4';
+const VERSAO_APP = '1.9.5';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -1988,9 +1988,12 @@ async function telaRegistro(app, id) {
       const g = gheDe(reg.filial, reg.secao);
       if (g) { reg.ghe = g; inpGhe.value = g; }
       encherFuncoes(); mostrarInfo(); alterou();
-      preencherDoPGR(S.editor);
+      const E0 = S.editor;
+      await aplicarHeranca(E0);
+      if (S.editor === E0) preencherDoPGR(E0);
     });
     encherFuncoes(); mostrarInfo();
+    if (reg.funcao) setTimeout(() => aplicarHeranca(E), 200);
     if (reg.funcao && f.campos.some(c => c.doPGR)) setTimeout(() => preencherDoPGR(S.editor), 300);
     cartaoCtx.appendChild(h('label', { class: 'rot', text: 'Seção' }));
     cartaoCtx.appendChild(selSec);
@@ -2666,6 +2669,92 @@ async function preencherDoPGR(E) {
     if (t) { t.value = d; t.dispatchEvent(new Event('ajustar')); }
   });
   if (n) { alterou(); toast('Tarefa prescrita preenchida com a descrição do PGR. Pode editar.'); }
+}
+
+/**
+ * Campos que se repetem entre formulários da mesma filial, seção e função.
+ * Quando um formulário é aberto (ou a função é escolhida), os campos vazios recebem o que já foi
+ * registrado no outro formulário. Vale nos dois sentidos e nunca sobrescreve o que já foi digitado.
+ * Cada item: { alvo: 'FORM.campo', de: ['FORM.campo', ...] } ou { alvo, calc: função que monta o valor }.
+ */
+const ESCALAS_ORG_ = ['6x1', '5x2', '12x36'];
+function textoJornada_(v) { return String(v || '').trim(); }
+function escalaDoTexto_(t) {
+  const m = String(t || '').toLowerCase().replace(/\s/g, '').match(/(6x1|5x2|12x36)/);
+  return m ? m[1] : '';
+}
+function intervaloDoTexto_(t) {
+  const s = String(t || '');
+  const m = s.match(/(\d+(?:[.,]\d+)?\s*(?:h(?:\d{2})?|horas?|min(?:utos)?))\s*(?:de\s+)?intervalo/i) ||
+    s.match(/intervalo\s*(?:de\s+)?(\d+(?:[.,]\d+)?\s*(?:h(?:\d{2})?|horas?|min(?:utos)?))/i);
+  return m ? m[1].trim() : '';
+}
+const HERANCA_ = [
+  { alvo: 'ORGANIZACAO.turnos', de: ['ATIVIDADE.turnos'] },
+  { alvo: 'ATIVIDADE.turnos', de: ['ORGANIZACAO.turnos'] },
+  { alvo: 'ORGANIZACAO.horario', de: ['ATIVIDADE.escala'] },
+  { alvo: 'ORGANIZACAO.escala', calc: g => escalaDoTexto_(g('ATIVIDADE.escala')) || escalaDoTexto_(g('ORGANIZACAO.horario')) },
+  { alvo: 'ORGANIZACAO.intervalo', calc: g => intervaloDoTexto_(g('ATIVIDADE.escala')) || intervaloDoTexto_(g('ORGANIZACAO.horario')) },
+  { alvo: 'ATIVIDADE.escala', calc: g => {
+    const hor = textoJornada_(g('ORGANIZACAO.horario'));
+    if (!hor) return '';
+    const esc = g('ORGANIZACAO.escala'), itv = textoJornada_(g('ORGANIZACAO.intervalo'));
+    const partes = [];
+    if (esc && esc !== 'Outra' && !escalaDoTexto_(hor)) partes.push(esc);
+    partes.push(hor);
+    if (itv && !intervaloDoTexto_(hor)) partes.push(itv + ' de intervalo');
+    return partes.join(', ');
+  } }
+];
+const NOME_FORM_CURTO_ = { ATIVIDADE: 'Análise da atividade', ORGANIZACAO: 'Organização do trabalho' };
+
+function herdarCampos(E) {
+  if (!E || !E.f || !E.reg || !E.reg.funcao || !E.reg.secao) return [];
+  if (E.reg.status === 'concluido') return [];
+  const fid = E.f.id, reg = E.reg;
+  const regras = HERANCA_.filter(x => x.alvo.split('.')[0] === fid);
+  if (!regras.length) return [];
+  // registros da mesma filial/seção/função, do mais recente para o mais antigo (o próprio registro conta para os campos calculados)
+  const irmaos = [...S.regs.values()].filter(r => !r.excluido && r.id !== reg.id && r.filial === reg.filial &&
+    r.secao === reg.secao && r.funcao === reg.funcao).sort((a, b) => String(b.atualizadoEm).localeCompare(String(a.atualizadoEm)));
+  if (!irmaos.length) return [];
+  const origens = new Set();
+  const g = chave => {
+    const [fo, ca] = chave.split('.');
+    if (fo === fid && reg.valores[ca] !== undefined && reg.valores[ca] !== '') return reg.valores[ca];
+    for (const r of irmaos) {
+      if (r.form !== fo) continue;
+      const v = (r.valores || {})[ca];
+      if (v !== undefined && v !== null && String(v).trim() !== '') { if (fo !== fid) origens.add(fo); return v; }
+    }
+    return '';
+  };
+  const preenchidos = [];
+  regras.forEach(x => {
+    const ca = x.alvo.split('.')[1];
+    const c = E.f.campos.find(k => k.id === ca);
+    if (!c) return;
+    const atual = reg.valores[ca];
+    if (atual !== undefined && atual !== null && String(atual).trim() !== '') return;
+    let v = x.calc ? x.calc(g) : '';
+    if (!x.calc) for (const ch of x.de) { v = g(ch); if (v) break; }
+    if (!v) return;
+    if (c.opcoes && !c.opcoes.includes(v)) return;
+    reg.valores[ca] = typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v;
+    preenchidos.push(c.rotulo);
+  });
+  E.herdadoDe = [...origens].map(o => NOME_FORM_CURTO_[o] || (form(o) || {}).titulo || o);
+  return preenchidos;
+}
+
+async function aplicarHeranca(E) {
+  const lista = herdarCampos(E);
+  if (!lista.length || S.editor !== E) return;
+  E.sujo = true;
+  await salvarEditorAgora();
+  const de = E.herdadoDe && E.herdadoDe.length ? ' com o que já foi registrado em ' + E.herdadoDe.join(' e ') : '';
+  await rotear();
+  toast(lista.join(', ') + ' preenchido(s)' + de + '. Pode editar.', 6000);
 }
 
 /* ==================== FUNCIONÁRIOS DA FILIAL (dado pessoal) ==================== */
