@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.3';
+const VERSAO_APP = '1.9.4';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -505,6 +505,28 @@ async function baixarConfig(silencioso) {
     if (!silencioso) toast(e.message, 6000);
     return false;
   }
+}
+
+/**
+ * Atualização silenciosa dos formulários: ao abrir o app, ao voltar para ele e quando a internet volta.
+ * Baixa de novo se a cópia do aparelho tem mais de 10 minutos ou se o app mudou de versão. Sem avisos na tela;
+ * só redesenha a tela se o usuário estiver no início ou numa lista (nunca no meio de um formulário).
+ */
+async function atualizarFormulariosSeVelhos(abrindo) {
+  if (S.baixandoCfg || !navigator.onLine || !conectado()) return;
+  const idade = S.cfg && S.cfg.geradoEm ? Date.now() - new Date(S.cfg.geradoEm).getTime() : Infinity;
+  const versaoAnterior = await DB.kvGet('versaoApp');
+  if (!(idade > 600000 || versaoAnterior !== VERSAO_APP)) return;
+  S.baixandoCfg = true;
+  try {
+    const antes = S.cfg ? JSON.stringify(S.cfg.formularios || []).length : 0;
+    if (await baixarConfig(true)) {
+      await DB.kvSet('versaoApp', VERSAO_APP);
+      const mudou = !antes || JSON.stringify(S.cfg.formularios || []).length !== antes;
+      const h0 = location.hash || '#/';
+      if ((abrindo || mudou) && (h0 === '#/' || h0.startsWith('#/g/') || h0.startsWith('#/f/') || h0 === '#/plano')) rotear();
+    }
+  } finally { S.baixandoCfg = false; }
 }
 
 function semDadosLocais(r) {
@@ -3209,9 +3231,9 @@ async function iniciar() {
   $('#voltar').addEventListener('click', () => history.length > 1 ? history.back() : (location.hash = '#/'));
   $('#status').addEventListener('click', () => sincronizar(true));
   window.addEventListener('hashchange', rotear);
-  window.addEventListener('online', () => { atualizarStatus(); setTimeout(() => sincronizar(false), 1500); });
+  window.addEventListener('online', () => { atualizarStatus(); setTimeout(() => { atualizarFormulariosSeVelhos(false); sincronizar(false); }, 1500); });
   window.addEventListener('offline', atualizarStatus);
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') salvarEditorAgora(); else if (navigator.onLine) setTimeout(() => sincronizar(false), 800); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') salvarEditorAgora(); else if (navigator.onLine) setTimeout(() => { atualizarFormulariosSeVelhos(false); sincronizar(false); }, 800); });
   window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.instalar = e; if (!location.hash || location.hash === '#/') rotear(); });
   setInterval(() => { if (navigator.onLine && !S.sinc && document.visibilityState === 'visible') sincronizar(false); }, 120000);
 
@@ -3244,12 +3266,7 @@ async function iniciar() {
   atualizarStatus();
   rotear();
   if (navigator.onLine && conectado()) {
-    const idade = S.cfg ? Date.now() - new Date(S.cfg.geradoEm).getTime() : Infinity;
-    const versaoAnterior = await DB.kvGet('versaoApp');
-    if (idade > 3600000 || versaoAnterior !== VERSAO_APP) {
-      if (await baixarConfig(true)) await DB.kvSet('versaoApp', VERSAO_APP);
-      if (!location.hash || location.hash === '#/' || location.hash.startsWith('#/r/')) rotear();
-    }
+    await atualizarFormulariosSeVelhos(true);
     sincronizar(false);
     if (S.ctx.filial) baixarFuncionarios(S.ctx.filial, false);
   }
