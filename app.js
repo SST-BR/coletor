@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.14';
+const VERSAO_APP = '1.9.15';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -963,7 +963,8 @@ function resumoRegistro(r) {
     const c = f.campos.find(c => c.tipo === tipo && !c.pessoal && !c.se && r.valores && r.valores[c.id]);
     if (c) { t = String(r.valores[c.id]); break; }
   }
-  return [r.funcao || r.secao, t].filter(Boolean).join(' · ') || (f ? f.titulo : r.form);
+  const porGhe = f && f.contexto && f.contexto.secao && !f.contexto.funcao;
+  return [porGhe ? (r.secao || r.funcao) : (r.funcao || r.secao), t].filter(Boolean).join(' · ') || (f ? f.titulo : r.form);
 }
 
 function linhaRegistro(r, mostrarForm) {
@@ -1867,17 +1868,21 @@ function avalDosimetria(r) {
 }
 
 /**
- * Calor por função exposta: quando a função passa por mais de um ponto de avaliação (ex.: cozinha e rotisseria),
- * todas as situações de todos os pontos entram juntas na média ponderada pelo tempo (NHO 06), e só o resultado
- * ponderado é comparado com o nível de ação e o limite de exposição.
+ * Calor por GHE (seção): todas as situações de todos os pontos de avaliação do GHE (ex.: cozinha com bancada, pia e fornos)
+ * entram juntas na média ponderada pelo tempo (NHO 06), e só o resultado ponderado é comparado com o nível de ação e o
+ * limite de exposição. As funções avaliadas são a soma das "Funções expostas" de cada ponto (e a função dos registros antigos).
  */
 function gruposCalor(regs) {
   const G = new Map();
   regs.forEach(r => {
     const v = r.valores || {};
-    const fs = (Array.isArray(v.funcoes) && v.funcoes.length ? v.funcoes : (r.funcao ? [r.funcao] : [])).map(x => { const q = funcaoQualificada(x); return { f: q.f, s: q.s || r.secao || '' }; });
-    if (!fs.length) fs.push({ f: '', s: r.secao || '', local: v.local || r.id });
-    fs.forEach(x => { const k = x.f ? x.s + '|' + x.f : 'local|' + x.local; if (!G.has(k)) G.set(k, { funcao: x.f, secao: x.s, regs: [] }); G.get(k).regs.push(r); });
+    const k = r.secao ? 'ghe|' + r.secao : 'local|' + (v.local || r.id);
+    if (!G.has(k)) G.set(k, { secao: r.secao || '', funcoes: [], regs: [] });
+    const g = G.get(k); g.regs.push(r);
+    (Array.isArray(v.funcoes) && v.funcoes.length ? v.funcoes : (r.funcao ? [r.funcao] : [])).forEach(x => {
+      const q = funcaoQualificada(x), nome = q.s && q.s !== g.secao ? q.f + ' [' + q.s + ']' : q.f;
+      if (nome && !g.funcoes.includes(nome)) g.funcoes.push(nome);
+    });
   });
   return [...G.values()];
 }
@@ -1893,8 +1898,9 @@ function avalCalorGrupo(g) {
   const pontos = regs.map(x => (x.valores || {}).local || 'Sem local');
   const fake = Object.assign({}, r, { valores: Object.assign({}, v0, { local: pontos.join(' + ') }) });
   const out = avalCalorR(fake, R, solarTodos);
-  out.titulo = g.funcao || ((v0.local) || 'Sem local');
-  out.sub = [g.secao, regs.length > 1 ? regs.length + ' pontos: ' + pontos.join(', ') : pontos[0]].filter(Boolean).join(' · ');
+  out.titulo = g.secao ? 'GHE - ' + g.secao : (v0.local || 'Sem local');
+  out.sub = regs.length > 1 ? regs.length + ' pontos: ' + pontos.join(', ') : 'Ponto: ' + pontos[0];
+  out.funcoesAv = g.funcoes;
   if (regs.length > 1) out.avisos.unshift('Média ponderada de ' + regs.length + ' pontos de avaliação (' + pontos.join(', ') + '), com o tempo de cada situação no período de 60 min.');
   out.regs = regs;
   return out;
@@ -2050,6 +2056,7 @@ async function telaAmbiental(app) {
     const card = h('div', { class: 'cartao calor-card' },
       h('div', { class: 'calor-cab' }, h('div', null, h('strong', { text: x.titulo }), h('div', { class: 'peq', text: (x.sub || '') + (r.status !== 'concluido' ? ' · rascunho' : '') })),
         h('span', { class: 'selo ' + x.pior, text: x.incompleto ? 'Incompleta' : x.pior === 'alto' ? 'Acima / enquadra' : x.pior === 'medio' ? 'Atenção' : x.pior === 'baixo' ? 'Dentro' : 'Sem conclusão' })));
+    if (x.funcoesAv) card.appendChild(h('p', { class: 'peq funcoes-av' }, h('b', { text: 'Funções avaliadas: ' }), x.funcoesAv.length ? x.funcoesAv.join(', ') : 'nenhuma marcada nos registros'));
     if (x.incompleto) card.appendChild(h('p', { class: 'peq', text: x.incompleto }));
     if (x.nums && x.nums.length) card.appendChild(h('div', { class: 'calor-num' }, x.nums.map(([k, val]) => h('div', null, h('small', { text: k }), h('b', { text: String(val) })))));
     (x.crits || []).forEach(c => card.appendChild(h('div', { class: 'crit-linha' }, h('span', { class: 'selo ' + c.nivel, text: c.rotulo }), h('span', { class: 'peq', text: c.texto }))));
