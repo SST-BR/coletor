@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.10';
+const VERSAO_APP = '1.9.11';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -216,7 +216,8 @@ function instrumentosDisponiveis(filtro) {
   for (const r of S.regs.values()) if (r.form === 'INSTRUMENTO' && !r.excluido) lista.set(r.id, r.valores || {});
   const out = [];
   lista.forEach((v, id) => {
-    if (filtro && !String(v.tipo || '').toLowerCase().includes(String(filtro).toLowerCase())) return;
+    // filtro aceita alternativas separadas por | (ex.: 'Decibelímetro|Multifunção')
+    if (filtro && !String(filtro).toLowerCase().split('|').some(f => String(v.tipo || '').toLowerCase().includes(f.trim()))) return;
     out.push({ id, rotulo: [v.tipo, [v.fabricante, v.modelo].filter(Boolean).join(' '), v.serie ? 'nº ' + v.serie : ''].filter(Boolean).join(' - ') || 'Instrumento' });
   });
   return out;
