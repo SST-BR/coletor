@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.13';
+const VERSAO_APP = '1.9.14';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -180,6 +180,16 @@ function formularios() { return (S.cfg && S.cfg.formularios) || []; }
 function form(id) { return formularios().find(f => f.id === id); }
 function filiais() { return (S.cfg && S.cfg.listas && S.cfg.listas.filiais) || []; }
 function filialInfo(cod) { return filiais().find(f => f.codigo === cod); }
+/** Fase pela data de inauguração da filial: antes = pré-inauguração; no dia e nos primeiros sábados do mês (Dia F/Dia C) = alto fluxo; depois = operação normal. */
+function faseAutomatica(filial, dataIso) {
+  const fi = filialInfo(filial), F = (S.cfg && S.cfg.fases) || [];
+  if (!fi || !fi.inauguracao || !dataIso || F.length < 3) return '';
+  if (dataIso < fi.inauguracao) return F[0];
+  if (dataIso === fi.inauguracao) return F[2];
+  const d = new Date(dataIso + 'T12:00:00');
+  if (d.getDay() === 6 && d.getDate() <= 7) return F[2];
+  return F[1];
+}
 
 function linhasQl(filial) {
   const ql = (S.cfg && S.cfg.listas && S.cfg.listas.ql) || [];
@@ -251,7 +261,7 @@ async function novoRegistro(formId, pre) {
     S.ajustes.avaliador = nome.trim().toUpperCase(); await DB.kvSet('ajustes', S.ajustes);
   }
   const r = {
-    id: uid(), form: f.id, filial: f.semFilial ? '' : S.ctx.filial, fase: f.semFilial ? '' : S.ctx.fase,
+    id: uid(), form: f.id, filial: f.semFilial ? '' : S.ctx.filial, fase: f.semFilial ? '' : (faseAutomatica(S.ctx.filial, hojeIso()) || S.ctx.fase),
     secao: '', funcao: '', ghe: '', avaliador: S.ajustes.avaliador || '', status: 'rascunho',
     criadoEm: agoraIso(), atualizadoEm: agoraIso(), versao: 1, valores: {}, anexos: [], sync: null
   };
@@ -821,8 +831,12 @@ function telaInicio(app) {
   selFase.value = S.ctx.fase || '';
   app.appendChild(h('div', { class: 'cartao ctx-ini' },
     h('div', null, h('label', { class: 'rot', text: 'Filial' }), selFil),
-    h('div', null, 
-h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros)' }), selFase)));
+    h('div', null, ...(() => {
+      const fa = faseAutomatica(S.ctx.filial, hojeIso()), fi = filialInfo(S.ctx.filial) || {};
+      if (!fa) return [h('label', { class: 'rot', text: 'Fase da loja (vale para os próximos registros)' }), selFase];
+      return [h('label', { class: 'rot', text: 'Fase da loja hoje' }), h('div', { class: 'fase-auto' }, h('strong', { text: fa }),
+        h('span', { class: 'peq', text: 'Automática pela data de inauguração (' + dataBr(fi.inauguracao) + '). Cada registro pode ser ajustado no próprio registro.' }))];
+    })())));
 
   if (S.instalar) app.appendChild(h('button', { class: 'bt larga', text: 'Instalar o app neste aparelho', onclick: async () => { S.instalar.prompt(); S.instalar = null; rotear(); } }));
 
@@ -1781,6 +1795,7 @@ function calcCalor(v) {
   const avisos = [], sit = [];
   let somaT = 0, somaI = 0, somaM = 0, semM = 0;
   (v.situacoes || []).forEach(s => {
+    const solar = (s._ambiente || v.ambiente) === 'Externo com carga solar direta';
     const tbn = num(s.tbn), tg = num(s.tg), tbs = num(s.tbs), lido = num(s.ibutgLido), t = num(s.duracao), M = num(s.m);
     let ib = null, origem = '';
     if (tbn !== null && tg !== null && (!solar || tbs !== null)) { ib = solar ? 0.7 * tbn + 0.1 * tbs + 0.2 * tg : 0.7 * tbn + 0.3 * tg; origem = 'calculado'; }
@@ -1789,7 +1804,7 @@ function calcCalor(v) {
     if (ib !== null && lido !== null && Math.abs(ib - lido) > 0.5) avisos.push('Situação "' + (s.descricao || '?') + '": IBUTG calculado (' + mostraNum(Math.round(ib * 10) / 10) + ') difere do lido no aparelho (' + mostraNum(lido) + '). Confira as leituras.');
     if (M === null) semM++;
     if (ib !== null && t) { somaT += t; somaI += ib * t; if (M !== null) somaM += M * t; }
-    sit.push({ desc: s.descricao || '', ib: ib === null ? null : Math.round(ib * 10) / 10, origem, t, M, atividade: s.atividadeM || '' });
+    sit.push({ desc: (s._ponto ? s._ponto + ': ' : '') + (s.descricao || ''), ib: ib === null ? null : Math.round(ib * 10) / 10, origem, t, M, atividade: s.atividadeM || '' });
   });
   if (!sit.length) return { erro: 'Nenhuma situação térmica registrada.' };
   if (!somaT) return { erro: 'Faltam leituras (tbn e tg, ou IBUTG lido) ou o tempo de cada situação.', sit };
@@ -1851,9 +1866,43 @@ function avalDosimetria(r) {
   return { titulo: funcoesDoReg(r) || 'Função não informada', sub: [r.secao, v.atividades ? String(v.atividades).slice(0, 80) : ''].filter(Boolean).join(' · '), nums, crits: [lip, pgr, ltcat], avisos: av };
 }
 
-function avalCalor(r) {
-  const v = r.valores || {}, R = calcCalor(v), solar = v.ambiente === 'Externo com carga solar direta';
-  const base = { titulo: v.local || 'Sem local', sub: [r.secao, funcoesDoReg(r)].filter(Boolean).join(' · '), avisos: R.avisos || [], tabela: R.sit };
+/**
+ * Calor por função exposta: quando a função passa por mais de um ponto de avaliação (ex.: cozinha e rotisseria),
+ * todas as situações de todos os pontos entram juntas na média ponderada pelo tempo (NHO 06), e só o resultado
+ * ponderado é comparado com o nível de ação e o limite de exposição.
+ */
+function gruposCalor(regs) {
+  const G = new Map();
+  regs.forEach(r => {
+    const v = r.valores || {};
+    const fs = (Array.isArray(v.funcoes) && v.funcoes.length ? v.funcoes : (r.funcao ? [r.funcao] : [])).map(x => { const q = funcaoQualificada(x); return { f: q.f, s: q.s || r.secao || '' }; });
+    if (!fs.length) fs.push({ f: '', s: r.secao || '', local: v.local || r.id });
+    fs.forEach(x => { const k = x.f ? x.s + '|' + x.f : 'local|' + x.local; if (!G.has(k)) G.set(k, { funcao: x.f, secao: x.s, regs: [] }); G.get(k).regs.push(r); });
+  });
+  return [...G.values()];
+}
+function avalCalorGrupo(g) {
+  const regs = g.regs, v0 = (regs[0].valores || {});
+  const sits = [];
+  regs.forEach(r => { const v = r.valores || {}; (v.situacoes || []).forEach(s => sits.push(Object.assign({}, s, { _ponto: regs.length > 1 ? (v.local || 'ponto') : '', _ambiente: v.ambiente }))); });
+  const solarTodos = regs.every(r => (r.valores || {}).ambiente === 'Externo com carga solar direta');
+  const juntos = { situacoes: sits, ambiente: solarTodos ? 'Externo com carga solar direta' : 'Interno ou externo sem carga solar direta',
+    aclimatizado: regs.some(r => (r.valores || {}).aclimatizado === 'Não') ? 'Não' : v0.aclimatizado,
+    vestimenta: (regs.map(r => (r.valores || {}).vestimenta).find(x => x && x !== 'Uniforme comum (algodão)')) || v0.vestimenta };
+  const R = calcCalor(juntos), r = regs[0];
+  const pontos = regs.map(x => (x.valores || {}).local || 'Sem local');
+  const fake = Object.assign({}, r, { valores: Object.assign({}, v0, { local: pontos.join(' + ') }) });
+  const out = avalCalorR(fake, R, solarTodos);
+  out.titulo = g.funcao || ((v0.local) || 'Sem local');
+  out.sub = [g.secao, regs.length > 1 ? regs.length + ' pontos: ' + pontos.join(', ') : pontos[0]].filter(Boolean).join(' · ');
+  if (regs.length > 1) out.avisos.unshift('Média ponderada de ' + regs.length + ' pontos de avaliação (' + pontos.join(', ') + '), com o tempo de cada situação no período de 60 min.');
+  out.regs = regs;
+  return out;
+}
+function avalCalor(r) { return avalCalorR(r, calcCalor(r.valores || {}), (r.valores || {}).ambiente === 'Externo com carga solar direta'); }
+function avalCalorR(r, R, solar) {
+  const v = r.valores || {};
+  const base = { titulo: v.local || 'Sem local', sub: [r.secao, funcoesDoReg(r)].filter(Boolean).join(' · '), avisos: (R.avisos || []).slice(), tabela: R.sit };
   if (R.erro) return Object.assign(base, { incompleto: R.erro, nums: R.ibutg ? [['IBUTG médio', mostraNum(R.ibutg) + ' °C']] : [], crits: [] });
   base.nums = [['IBUTG médio', mostraNum(R.ibutg) + ' °C'], ['M médio', R.M + ' W'], ['Nível de ação', mostraNum(R.na) + ' °C'], ['Limite de exposição', mostraNum(R.le) + ' °C']];
   const acima = R.nivel === 'alto';
@@ -1957,7 +2006,7 @@ function avalQuimico(r) {
 
 const TIPOS_AMBIENTAIS = [
   { id: 'ruido', nome: 'Ruído (dosimetria)', forms: ['RUIDO_DOSE'], av: r => [avalDosimetria(r)] },
-  { id: 'calor', nome: 'Calor (IBUTG)', forms: ['CALOR'], av: r => [avalCalor(r)] },
+  { id: 'calor', nome: 'Calor (IBUTG)', forms: ['CALOR'], grupo: regs => gruposCalor(regs).map(avalCalorGrupo) },
   { id: 'conforto', nome: 'Conforto térmico', forms: ['CONFORTO_TERMICO'], av: avalPontosConforto },
   { id: 'acustico', nome: 'Ruído pontual (conforto)', forms: ['RUIDO_PONTO'], av: r => avalPontosRuidoPontual(r, 65) },
   { id: 'lux', nome: 'Iluminamento', forms: ['ILUMINACAO'], av: avalPontosLux },
@@ -1975,7 +2024,9 @@ async function telaAmbiental(app) {
   const regs = registrosVisiveis().filter(r => r.filial === fil);
   const dados = TIPOS_AMBIENTAIS.map(t => {
     const itens = [];
-    regs.filter(r => t.forms.includes(r.form)).forEach(r => { let L = []; try { L = t.av(r) || []; } catch (e) { L = [{ titulo: 'Erro ao calcular', incompleto: e.message, nums: [], crits: [], avisos: [] }]; } L.forEach(x => itens.push(Object.assign(x, { reg: r }))); });
+    const doTipo = regs.filter(r => t.forms.includes(r.form));
+    if (t.grupo) { try { t.grupo(doTipo).forEach(x => itens.push(Object.assign(x, { reg: x.regs[0] }))); } catch (e) { itens.push({ titulo: 'Erro ao calcular', incompleto: e.message, nums: [], crits: [], avisos: [], reg: doTipo[0] }); } }
+    else doTipo.forEach(r => { let L = []; try { L = t.av(r) || []; } catch (e) { L = [{ titulo: 'Erro ao calcular', incompleto: e.message, nums: [], crits: [], avisos: [] }]; } L.forEach(x => itens.push(Object.assign(x, { reg: r }))); });
     itens.forEach(x => { x.pior = x.incompleto ? 'cinza' : (x.crits || []).reduce((m, c) => ORDEM_NIVEL[c.nivel] < ORDEM_NIVEL[m] ? c.nivel : m, 'cinza'); });
     itens.sort((a, b) => ORDEM_NIVEL[a.pior] - ORDEM_NIVEL[b.pior] || String(a.titulo).localeCompare(String(b.titulo)));
     return Object.assign({}, t, { itens });
@@ -2007,9 +2058,39 @@ async function telaAmbiental(app) {
       x.tabela.map(s => h('tr', null, h('td', { text: s.desc + (s.atividade ? ' (' + s.atividade + ')' : '') }), h('td', { text: s.ib === null ? '-' : mostraNum(s.ib) + (s.origem === 'lido no aparelho' ? '*' : '') }),
         h('td', { text: s.t ? s.t + ' min' : '-' }), h('td', { text: s.M === null ? '-' : s.M + ' W' })))));
     (x.avisos || []).forEach(a => card.appendChild(h('div', { class: 'aviso-calor', text: '⚠ ' + a })));
-    card.appendChild(h('a', { class: 'bt sec mini', href: '#/r/' + r.id, text: 'Abrir registro' }));
+    if (x.regs && x.regs.length > 1) card.appendChild(h('div', { class: 'linha-bts' }, x.regs.map(rr => h('a', { class: 'bt sec mini', href: '#/r/' + rr.id, text: 'Abrir: ' + ((rr.valores || {}).local || 'ponto') }))));
+    else card.appendChild(h('a', { class: 'bt sec mini', href: '#/r/' + r.id, text: 'Abrir registro' }));
     app.appendChild(card);
   });
+}
+
+/** Administrador: data de inauguração da filial e correção da fase dos registros em lote. */
+function cartaoInauguracao(fil) {
+  const fi = filialInfo(fil) || {};
+  const inp = h('input', { class: 'inp curto-data', type: 'date', value: fi.inauguracao || '' });
+  const msg = h('p', { class: 'peq', text: fi.inauguracao ? 'Fase de hoje: ' + faseAutomatica(fil, hojeIso()) + '.' : 'Sem data: a fase é escolhida à mão na tela inicial.' });
+  const salvar = async () => {
+    try {
+      toast('Salvando...', 20000);
+      await api({ acao: 'filial-inauguracao', filial: fil, data: inp.value }, 60000);
+      await baixarConfig(true);
+      toast(inp.value ? 'Data de inauguração salva. Os próximos registros já recebem a fase pela data.' : 'Data removida.', 6000);
+      rotear();
+    } catch (e) { toast(e.message, 7000); }
+  };
+  const corrigir = async () => {
+    if (!(await confirmar('Corrigir a fase de todos os registros da filial ' + fil + ' pela data em que cada um foi criado (antes de ' + dataBr(fi.inauguracao) + ': pré-inauguração; no dia e nos primeiros sábados do mês: alto fluxo; depois: operação normal)? Os marcados como "Outra" não mudam.', 'Corrigir'))) return;
+    try {
+      toast('Corrigindo...', 60000);
+      const j = await api({ acao: 'fase-recalcular', filial: fil }, 300000);
+      toast(j.alterados + ' de ' + j.total + ' registro(s) corrigido(s). Os aparelhos recebem na próxima sincronização.', 8000);
+      sincronizar(false);
+    } catch (e) { toast(e.message, 7000); }
+  };
+  return h('div', { class: 'cartao fino inaug' },
+    h('strong', { text: 'Fase da loja pela data de inauguração' }), msg,
+    h('div', { class: 'linha-bts' }, inp, h('button', { class: 'bt sec', text: 'Salvar data', onclick: salvar }),
+      fi.inauguracao ? h('button', { class: 'bt', text: 'Corrigir fase dos registros', onclick: corrigir }) : null));
 }
 
 async function telaPainel(app) {
@@ -2029,6 +2110,7 @@ async function telaPainel(app) {
     const info = filialInfo(fil);
     if (!P) { area.appendChild(h('div', { class: 'cartao' }, h('p', { class: 'peq', text: navigator.onLine ? 'Carregando o plano da filial...' : 'Sem internet. Conecte uma vez para guardar o plano neste aparelho.' }), h('div', { class: 'girando' }))); return; }
     const C = calcPlano(P, fil), g = C.geral;
+    area.appendChild(cartaoInauguracao(fil));
     const formsAmb = TIPOS_AMBIENTAIS.flatMap(t => t.forms);
     const nAmb = registrosVisiveis().filter(r => formsAmb.includes(r.form) && r.filial === fil).length;
     area.appendChild(h('a', { class: 'cartao fino link-calor', href: '#/ambiental' },
