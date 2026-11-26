@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.11';
+const VERSAO_APP = '1.9.12';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -792,6 +792,7 @@ async function rotear() {
   if (rota[0] === 'docs') return telaDocumentos(app);
   if (rota[0] === 'plano') return telaPlano(app);
   if (rota[0] === 'painel') return ehAdmin() ? telaPainel(app) : telaInicio(app);
+  if (rota[0] === 'calor') return ehAdmin() ? telaCalor(app) : telaInicio(app);
   return telaInicio(app);
 }
 
@@ -1763,6 +1764,89 @@ async function carregarPlanoFilial(fil, forcar) {
   return P;
 }
 
+/* ======================= PRÉVIA DE CALOR (só administrador) =======================
+ * NHO 06 (2017): IBUTG = 0,7 tbn + 0,3 tg (sem carga solar) ou 0,7 tbn + 0,1 tbs + 0,2 tg (com carga solar).
+ * IBUTG médio e M médio ponderados pelo tempo no período de 60 min mais desfavorável.
+ * Limite de exposição (NR-15 Anexo 3, Quadro 1 = NR-09 Anexo III, Quadro 2): 56,7 - 11,5·log10(M).
+ * Nível de ação (NR-09 Anexo III, Quadro 1): 59,9 - 14,1·log10(M). Valores dos quadros para trabalhador aclimatizado.
+ */
+function limitesCalor(M) {
+  const m = Math.min(Math.max(M, 100), 606);
+  return { le: Math.round((56.7 - 11.5 * Math.log10(m)) * 10) / 10, na: Math.round((59.9 - 14.1 * Math.log10(m)) * 10) / 10, foraQuadro: M < 100 || M > 606 };
+}
+function calcCalor(v) {
+  const num = x => { const n = Number(String(x === undefined || x === null ? '' : x).replace(',', '.')); return String(x === undefined || x === null ? '' : x).trim() === '' || isNaN(n) ? null : n; };
+  const solar = v.ambiente === 'Externo com carga solar direta';
+  const avisos = [], sit = [];
+  let somaT = 0, somaI = 0, somaM = 0, semM = 0;
+  (v.situacoes || []).forEach(s => {
+    const tbn = num(s.tbn), tg = num(s.tg), tbs = num(s.tbs), lido = num(s.ibutgLido), t = num(s.duracao), M = num(s.m);
+    let ib = null, origem = '';
+    if (tbn !== null && tg !== null && (!solar || tbs !== null)) { ib = solar ? 0.7 * tbn + 0.1 * tbs + 0.2 * tg : 0.7 * tbn + 0.3 * tg; origem = 'calculado'; }
+    else if (lido !== null) { ib = lido; origem = 'lido no aparelho'; }
+    if (solar && tbs === null && lido === null) avisos.push('Situação "' + (s.descricao || '?') + '": com carga solar direta a NHO 06 usa também o tbs, que não foi informado.');
+    if (ib !== null && lido !== null && Math.abs(ib - lido) > 0.5) avisos.push('Situação "' + (s.descricao || '?') + '": IBUTG calculado (' + mostraNum(Math.round(ib * 10) / 10) + ') difere do lido no aparelho (' + mostraNum(lido) + '). Confira as leituras.');
+    if (M === null) semM++;
+    if (ib !== null && t) { somaT += t; somaI += ib * t; if (M !== null) somaM += M * t; }
+    sit.push({ desc: s.descricao || '', ib: ib === null ? null : Math.round(ib * 10) / 10, origem, t, M, atividade: s.atividadeM || '' });
+  });
+  if (!sit.length) return { erro: 'Nenhuma situação térmica registrada.' };
+  if (!somaT) return { erro: 'Faltam leituras (tbn e tg, ou IBUTG lido) ou o tempo de cada situação.', sit };
+  if (semM) return { erro: 'Falta a taxa metabólica (W) em ' + semM + ' situação(ões). Sem ela não há limite para comparar.', sit, ibutg: Math.round(somaI / somaT * 10) / 10 };
+  if (Math.abs(somaT - 60) > 1) avisos.push('A soma dos tempos das situações é ' + mostraNum(somaT) + ' min; o período de avaliação deve ter 60 min. O cálculo ponderou pelos ' + mostraNum(somaT) + ' min informados.');
+  const ibutg = Math.round(somaI / somaT * 10) / 10, M = Math.round(somaM / somaT), L = limitesCalor(M);
+  if (L.foraQuadro) avisos.push('Taxa metabólica média de ' + M + ' W fora da faixa dos quadros (100 a 606 W); usado o extremo mais próximo.');
+  if (v.aclimatizado === 'Não') avisos.push('Trabalhador não aclimatizado: os quadros valem para aclimatizados. Para não aclimatizados, a NHO 06 pede plano de aclimatização e o resultado aqui tende a subestimar o risco.');
+  if (v.vestimenta && v.vestimenta !== 'Uniforme comum (algodão)') avisos.push('Vestimenta "' + v.vestimenta + '": confira se ela exige acréscimo ao IBUTG (NR-09 Anexo III, Quadro 4; ex.: avental impermeável ao vapor +4 °C, capuz +1 °C). Não foi somado nada.');
+  let nivel, texto;
+  if (ibutg > L.le) { nivel = 'alto'; texto = 'Acima do limite de exposição'; }
+  else if (ibutg > L.na) { nivel = 'medio'; texto = 'Acima do nível de ação'; }
+  else { nivel = 'baixo'; texto = 'Abaixo do nível de ação'; }
+  const insal = nivel === 'alto' ? (solar ? 'Acima do limite, mas em ambiente externo sem fonte artificial de calor: a NR-15 Anexo 3 só caracteriza insalubridade em ambiente fechado ou com fonte artificial de calor. Cabem as medidas corretivas da NR-09.' : 'Indicativo de insalubridade (NR-15, Anexo 3) e obrigação de medidas corretivas (NR-09, Anexo III, item 4.2).') :
+    nivel === 'medio' ? 'Medidas preventivas da NR-09, Anexo III, item 4.1 (água fresca e incentivo à hidratação, trabalhos pesados nos horários mais amenos, vestimenta adequada).' : 'Sem medidas obrigatórias pelo calor; manter o monitoramento.';
+  return { ibutg, M, na: L.na, le: L.le, nivel, texto, insal, avisos, sit, somaT };
+}
+
+async function telaCalor(app) {
+  definirTopo('Calor: prévia dos limites', true);
+  const fil = S.ctx.filial;
+  const regs = registrosVisiveis().filter(r => r.form === 'CALOR' && r.filial === fil).sort((a, b) => String(a.secao).localeCompare(String(b.secao)));
+  app.appendChild(h('div', { class: 'cartao fino' },
+    h('p', { class: 'peq', text: 'Prévia calculada no aparelho com as leituras registradas, pela NHO 06 (2017), NR-15 Anexo 3 e NR-09 Anexo III. Serve para orientar a avaliação; a conclusão do laudo continua sendo sua. Visível só para o administrador.' })));
+  if (!regs.length) { app.appendChild(h('p', { class: 'vazio', text: 'Nenhuma avaliação de calor na filial ' + (fil || '') + ' neste aparelho. Se a equipe já registrou, sincronize em Registros.' })); return; }
+  const cont = { alto: 0, medio: 0, baixo: 0, inc: 0 };
+  const lista = h('div');
+  regs.forEach(r => {
+    const v = r.valores || {}, R = calcCalor(v);
+    const funcs = (v.funcoes && v.funcoes.length ? v.funcoes : (r.funcao ? [r.funcao] : [])).map(x => funcaoQualificada(x).f).join(', ');
+    if (R.erro) cont.inc++; else cont[R.nivel]++;
+    const cab = h('div', { class: 'calor-cab' },
+      h('div', null, h('strong', { text: (v.local || 'Sem local') }), h('div', { class: 'peq', text: [r.secao, funcs].filter(Boolean).join(' · ') + (r.status !== 'concluido' ? ' · rascunho' : '') })),
+      R.erro ? h('span', { class: 'selo cinza', text: 'Incompleta' }) : h('span', { class: 'selo ' + R.nivel, text: R.texto }));
+    const corpo = h('div');
+    if (R.erro) corpo.appendChild(h('p', { class: 'peq', text: R.erro }));
+    else {
+      corpo.appendChild(h('div', { class: 'calor-num' },
+        h('div', null, h('small', { text: 'IBUTG médio' }), h('b', { text: mostraNum(R.ibutg) + ' °C' })),
+        h('div', null, h('small', { text: 'M médio' }), h('b', { text: R.M + ' W' })),
+        h('div', null, h('small', { text: 'Nível de ação' }), h('b', { text: mostraNum(R.na) + ' °C' })),
+        h('div', null, h('small', { text: 'Limite de exposição' }), h('b', { text: mostraNum(R.le) + ' °C' }))));
+      corpo.appendChild(h('p', { class: 'peq', text: R.insal }));
+    }
+    if (R.sit && R.sit.length) corpo.appendChild(h('table', { class: 'tab-calor' },
+      h('tr', null, ['Situação', 'IBUTG', 'Tempo', 'M'].map(t => h('th', { text: t }))),
+      R.sit.map(x => h('tr', null, h('td', { text: x.desc + (x.atividade ? ' (' + x.atividade + ')' : '') }), h('td', { text: x.ib === null ? '-' : mostraNum(x.ib) + (x.origem === 'lido no aparelho' ? '*' : '') }),
+        h('td', { text: x.t ? x.t + ' min' : '-' }), h('td', { text: x.M === null ? '-' : x.M + ' W' })))));
+    (R.avisos || []).forEach(a => corpo.appendChild(h('div', { class: 'aviso-calor', text: '⚠ ' + a })));
+    lista.appendChild(h('div', { class: 'cartao calor-card' }, cab, corpo, h('a', { class: 'bt sec mini', href: '#/r/' + r.id, text: 'Abrir registro' })));
+  });
+  app.appendChild(h('div', { class: 'cartao fino calor-resumo' },
+    h('span', { class: 'selo alto', text: cont.alto + ' acima do limite' }), h('span', { class: 'selo medio', text: cont.medio + ' acima do nível de ação' }),
+    h('span', { class: 'selo baixo', text: cont.baixo + ' abaixo do nível de ação' }), cont.inc ? h('span', { class: 'selo cinza', text: cont.inc + ' incompleta(s)' }) : null));
+  app.appendChild(lista);
+  app.appendChild(h('p', { class: 'peq', text: '* IBUTG lido no aparelho (sem tbn e tg para calcular). Limites para trabalhador aclimatizado; IBUTG e M ponderados pelo tempo no período de 60 min.' }));
+}
+
 async function telaPainel(app) {
   definirTopo('Painel de andamento', false);
   const fil = S.ctx.filial;
@@ -1780,6 +1864,10 @@ async function telaPainel(app) {
     const info = filialInfo(fil);
     if (!P) { area.appendChild(h('div', { class: 'cartao' }, h('p', { class: 'peq', text: navigator.onLine ? 'Carregando o plano da filial...' : 'Sem internet. Conecte uma vez para guardar o plano neste aparelho.' }), h('div', { class: 'girando' }))); return; }
     const C = calcPlano(P, fil), g = C.geral;
+    const nCalor = registrosVisiveis().filter(r => r.form === 'CALOR' && r.filial === fil).length;
+    area.appendChild(h('a', { class: 'cartao fino link-calor', href: '#/calor' },
+      h('strong', { text: '🌡 Calor (IBUTG): prévia dos limites' }),
+      h('span', { class: 'peq', text: nCalor ? nCalor + ' avaliação(ões) de calor nesta filial · NR-15 Anexo 3 e NR-09 Anexo III' : 'Nenhuma avaliação de calor nesta filial ainda' })));
 
     // 1. Visão geral (macro)
     area.appendChild(h('div', { class: 'hero' },
