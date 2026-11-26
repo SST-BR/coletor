@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.15';
+const VERSAO_APP = '1.9.16';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -2901,6 +2901,11 @@ function controleArquivos(c, esc, path, modo) {
     }
   }
   async function receber(arquivos) {
+    if (!arquivos.length) return;
+    try { await receberArquivos(arquivos); }
+    catch (e) { console.error(e); toast('Não foi possível guardar o arquivo: ' + (e && e.message ? e.message : e) + '. Se o celular estiver sem espaço, use "Liberar espaço" em Ajustes.', 9000); }
+  }
+  async function receberArquivos(arquivos) {
     for (const arq of arquivos) {
       let blob = arq, ext = (arq.name.split('.').pop() || 'bin').toLowerCase();
       let comData = null;
@@ -2918,21 +2923,25 @@ function controleArquivos(c, esc, path, modo) {
     desenhar();
   }
   const aceita = modo === 'foto' ? 'image/*' : modo === 'video' ? 'video/*' : 'image/*,application/pdf';
-  const inpCam = h('input', { type: 'file', accept: aceita, capture: 'environment', hidden: true, onchange: e => { receber([...e.target.files]); e.target.value = ''; } });
-  const inpGal = h('input', { type: 'file', accept: aceita, multiple: true, hidden: true, onchange: e => { receber([...e.target.files]); e.target.value = ''; } });
+  // Os seletores ficam dentro de <label> e só visualmente escondidos (não display:none): o toque no rótulo abre a câmera
+  // ou a galeria pelo próprio navegador, sem depender de input.click(), que alguns celulares ignoram em silêncio.
+  const aoEscolher = e => { const fs = [...(e.target.files || [])]; e.target.value = ''; receber(fs); };
+  const inpCam = h('input', { type: 'file', class: 'arq-oculto', accept: aceita, capture: 'environment', onchange: aoEscolher });
+  const inpGal = h('input', { type: 'file', class: 'arq-oculto', accept: aceita, multiple: true, onchange: aoEscolher });
+  const rotuloArq = (cls, texto, inp) => h('label', { class: cls, role: 'button', tabindex: '0', onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inp.click(); } } }, texto, inp);
   if (c.leituraDe) {
     // foto do visor do aparelho, logo abaixo do valor medido: só a câmera em destaque
     box.appendChild(h('div', { class: 'linha-bts' },
-      h('button', { type: 'button', class: 'bt sec pequeno bt-leitura', text: '📷 Fotografar o aparelho', onclick: () => inpCam.click() }),
-      h('button', { type: 'button', class: 'bt sec pequeno', text: 'Galeria', onclick: () => inpGal.click() }), inpCam, inpGal));
+      rotuloArq('bt sec pequeno bt-leitura', '📷 Fotografar o aparelho', inpCam),
+      rotuloArq('bt sec pequeno', 'Galeria', inpGal)));
     box.appendChild(miniaturas);
     desenhar();
     return box;
   }
   if (modo !== 'video') box.appendChild(flagCarimbo());
   box.appendChild(h('div', { class: 'linha-bts' },
-    modo !== 'arquivo' ? h('button', { type: 'button', class: 'bt', text: modo === 'video' ? 'Gravar vídeo' : 'Câmera', onclick: () => inpCam.click() }) : h('button', { type: 'button', class: 'bt', text: 'Fotografar', onclick: () => { inpCam.accept = 'image/*'; inpCam.click(); } }),
-    h('button', { type: 'button', class: 'bt sec', text: modo === 'arquivo' ? 'Escolher arquivo' : 'Galeria', onclick: () => inpGal.click() }), inpCam, inpGal));
+    modo === 'arquivo' ? (inpCam.accept = 'image/*', rotuloArq('bt', 'Fotografar', inpCam)) : rotuloArq('bt', modo === 'video' ? 'Gravar vídeo' : 'Câmera', inpCam),
+    rotuloArq('bt sec', modo === 'arquivo' ? 'Escolher arquivo' : 'Galeria', inpGal)));
   box.appendChild(miniaturas);
   desenhar();
   return box;
