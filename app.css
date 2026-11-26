@@ -534,3 +534,9 @@ main { padding: 16px 14px 120px; }
 button.pm-mini { border: 0; font-family: inherit; cursor: pointer; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 button.pm-mini:active { transform: scale(.95); }
 .pm, .pm-mini, .chip, .tile, .bt, .atalho, .bloco, .sec-cab { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+/* foto da leitura do aparelho, colada no campo medido */
+.campo.leitura { margin-top: -6px; padding-top: 0; }
+.campo.leitura > .rot { font-size: .82em; font-weight: 600; color: var(--sub, #64748b); }
+.campo.leitura .bt-leitura { font-weight: 700; }
+.campo.leitura .miniaturas:empty { display: none; }
