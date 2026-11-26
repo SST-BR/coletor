@@ -565,3 +565,7 @@ button.pm-mini:active { transform: scale(.95); }
 @media (max-width: 520px) { .crit-linha { flex-direction: column; gap: 2px; } .crit-linha .selo { min-width: 0; } }
 .fase-auto { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; background: var(--fundo2, #f5f6fb); }
 .inaug { margin-bottom: 12px; } .inaug .linha-bts { align-items: center; flex-wrap: wrap; }
+
+/* seletor de arquivo escondido só visualmente, dentro do rótulo que serve de botão */
+.arq-oculto { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip: rect(0 0 0 0); pointer-events: none; }
+label.bt { cursor: pointer; position: relative; user-select: none; -webkit-user-select: none; }
