@@ -540,3 +540,8 @@ button.pm-mini:active { transform: scale(.95); }
 .campo.leitura > .rot { font-size: .82em; font-weight: 600; color: var(--sub, #64748b); }
 .campo.leitura .bt-leitura { font-weight: 700; }
 .campo.leitura .miniaturas:empty { display: none; }
+
+/* funções de outras seções */
+.fun-outras { max-height: 55vh; overflow: auto; margin: 10px 0; }
+.fun-outras .sec-grupo { padding: 10px 0; border-bottom: 1px solid var(--linha, #e5e7eb); }
+.fun-outras .sec-cab { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }

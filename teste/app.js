@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.6';
+const VERSAO_APP = '1.9.7';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -1520,10 +1520,11 @@ function feitoNoAparelho(m, l, filial) {
     if (r.form !== m.form || r.filial !== filial) return false;
     if (m.form === 'CHECKOUT') return true;
     const v = r.valores || {};
-    if (secaoNorm(r.secao || v.secao) !== secaoNorm(l.secao)) return false;
-    if (PLANO_POR_FUNCAO[m.form]) return semAcento(r.funcao).trim() === semAcento(l.funcao).trim();
-    const fs = Array.isArray(v.funcoes) ? v.funcoes.map(x => semAcento(x).trim()) : [];
-    return !fs.length || fs.includes(semAcento(l.funcao).trim());
+    const mesmaSec = secaoNorm(r.secao || v.secao) === secaoNorm(l.secao), fn = semAcento(l.funcao).trim();
+    if (PLANO_POR_FUNCAO[m.form]) return mesmaSec && semAcento(r.funcao).trim() === fn;
+    const fs = Array.isArray(v.funcoes) ? v.funcoes.map(funcaoQualificada) : [];
+    if (!fs.length) return mesmaSec;
+    return fs.some(x => semAcento(x.f).trim() === fn && (x.s ? secaoNorm(x.s) === secaoNorm(l.secao) : mesmaSec));
   });
 }
 
@@ -2141,6 +2142,43 @@ function chips(opcoes, valor, multi, aoMudar) {
   return box;
 }
 
+/**
+ * Funções de outras seções num campo "funções" (ex.: antecâmara usada por todo o setor de perecíveis).
+ * Ficam gravadas como "FUNÇÃO [SEÇÃO]", para o plano e a AET saberem de qual seção é cada função.
+ */
+function funcaoQualificada(x) { const m = String(x || '').match(/^(.*) \[(.+)\]$/); return m ? { f: m[1].trim(), s: m[2].trim() } : { f: String(x || '').trim(), s: null }; }
+function escolherFuncoesOutrasSecoes(filial, secAtual, atuais, aoSalvar) {
+  let sel = new Set(atuais);
+  const lista = h('div', { class: 'fun-outras' });
+  const secoes = secoesDe(filial).filter(s => s !== secAtual && funcoesDe(filial, s).length);
+  const busca = h('input', { class: 'inp', placeholder: 'Filtrar seção (ex.: açougue, FLV, frios, padaria)', oninput: () => desenhar() });
+  function desenhar() {
+    lista.innerHTML = '';
+    const q = semAcento(busca.value).trim();
+    secoes.filter(s => !q || semAcento(s).includes(q)).forEach(s => {
+      const fs = funcoesDe(filial, s), quals = fs.map(f => f + ' [' + s + ']');
+      const marcadas = quals.filter(x => sel.has(x)).length;
+      const ch = chips(fs, fs.filter(f => sel.has(f + ' [' + s + ']')), true, v => {
+        quals.forEach(x => sel.delete(x)); v.forEach(f => sel.add(f + ' [' + s + ']')); desenhar();
+      });
+      lista.appendChild(h('div', { class: 'sec-grupo' },
+        h('div', { class: 'sec-cab' }, h('strong', { text: s + (marcadas ? ' (' + marcadas + ')' : '') }),
+          h('button', { type: 'button', class: 'bt sec mini', text: marcadas === quals.length ? 'Desmarcar todas' : 'Marcar todas', onclick: () => {
+            if (marcadas === quals.length) quals.forEach(x => sel.delete(x)); else quals.forEach(x => sel.add(x)); desenhar();
+          } })), ch));
+    });
+    if (!lista.childNodes.length) lista.appendChild(h('p', { class: 'peq', text: 'Nenhuma seção encontrada.' }));
+  }
+  desenhar();
+  let fechar;
+  fechar = modal(h('div', null, h('h3', { text: 'Funções de outras seções' }),
+    h('p', { class: 'peq', text: 'Marque as funções que também acessam este local. No plano e na AET, cada uma conta na seção de origem.' }),
+    busca, lista,
+    h('div', { class: 'linha-bts' },
+      h('button', { class: 'bt', text: 'Aplicar', onclick: () => { aoSalvar([...sel]); fechar(); } }),
+      h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => fechar() }))));
+}
+
 const CONTROLES = {
   texto(c, esc) {
     const inp = h('input', { class: 'inp', value: esc[c.id] || '', 'data-campo': c.id, oninput: e => { esc[c.id] = e.target.value; alterou(); } });
@@ -2315,7 +2353,9 @@ const CONTROLES = {
       if (!sec) { box.appendChild(h('div', { class: 'peq', text: 'Escolha a seção acima para listar as funções.' })); return; }
       const ops = funcoesDe(reg.filial, sec);
       (esc[c.id] || []).forEach(x => { if (!ops.includes(x)) ops.push(x); });
+      if (!funcoesDe(reg.filial, sec).length) box.appendChild(h('div', { class: 'peq', text: 'Esta seção não tem funções no quadro de lotação (ex.: antecâmara, área comum). Use "Funções de outras seções" para escolher quem acessa.' }));
       box.appendChild(chips(ops, esc[c.id] || [], true, v => { esc[c.id] = v; alterou(); }));
+      box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: '+ Funções de outras seções', onclick: () => escolherFuncoesOutrasSecoes(reg.filial, sec, esc[c.id] || [], v => { esc[c.id] = v; alterou(); desenhar(); }) }));
       box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: '+ Outra função', onclick: async () => {
         const v = await perguntar('Nome da função:');
         if (!v) return;
