@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.5';
+const VERSAO_APP = '1.9.6';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -319,13 +319,25 @@ async function adicionarAnexo(reg, campoPath, c, blob, nomeBase, extensao) {
 }
 
 async function removerAnexo(reg, id) {
-  reg.anexos = reg.anexos.filter(a => a.id !== id);
+  const vr = varianteComData(reg, id);
+  reg.anexos = reg.anexos.filter(a => a.id !== id && a !== vr);
   await DB.del('blobs', id);
   urlsObj.delete(id);
+  if (vr) { await DB.del('blobs', vr.id); urlsObj.delete(vr.id); }
 }
 
 /* ============================ FOTO E ARQUIVOS ============================ */
-async function processarFoto(arquivo, carimbo) {
+function desenharCarimbo(g, w, hh, carimbo) {
+  const fs = Math.max(14, Math.round(w / 48));
+  g.fillStyle = 'rgba(0,0,0,0.55)';
+  g.fillRect(0, hh - fs * 1.9, w, fs * 1.9);
+  g.fillStyle = '#fff';
+  g.font = fs + 'px sans-serif';
+  g.fillText(carimbo, fs * 0.6, hh - fs * 0.6, w - fs * 1.2);
+}
+
+/** dupla: devolve { limpa, comData } - a foto sem texto e a mesma com a faixa de data e hora (usada no app e na AET "com data"). */
+async function processarFoto(arquivo, carimbo, dupla) {
   try {
     const bmp = await createImageBitmap(arquivo);
     const max = 1920;
@@ -335,6 +347,12 @@ async function processarFoto(arquivo, carimbo) {
     cv.width = w; cv.height = hh;
     const g = cv.getContext('2d');
     g.drawImage(bmp, 0, 0, w, hh);
+    if (dupla) {
+      const limpa = await new Promise(res => cv.toBlob(b => res(b), 'image/jpeg', 0.82));
+      if (!carimbo) return { limpa, comData: null };
+      desenharCarimbo(g, w, hh, carimbo);
+      return { limpa, comData: await new Promise(res => cv.toBlob(b => res(b), 'image/jpeg', 0.82)) };
+    }
     if (carimbo) {
       const fs = Math.max(14, Math.round(w / 48));
       g.fillStyle = 'rgba(0,0,0,0.55)';
@@ -345,9 +363,13 @@ async function processarFoto(arquivo, carimbo) {
     }
     return await new Promise(res => cv.toBlob(b => res(b), 'image/jpeg', 0.82));
   } catch (e) {
-    return arquivo;
+    return dupla ? { limpa: arquivo, comData: null } : arquivo;
   }
 }
+
+/** Versão com data e hora de uma foto (anexo separado, ligado à foto limpa pelo campo '_comData:<id>'). */
+const PREF_COMDATA = '_comData:';
+function varianteComData(reg, id) { return (reg.anexos || []).find(x => x.campo === PREF_COMDATA + id) || null; }
 
 function carimboLigado() { return S.ajustes.carimbo !== false; }
 
@@ -1210,6 +1232,12 @@ async function telaDocumentos(app) {
         .map(([v, t]) => h('option', { value: v, text: t, selected: v === modoInstr })));
     const chkCert = h('input', { type: 'checkbox', checked: !!opcoesDocs.anexoCert, disabled: modoInstr !== 'COMPLETO', onchange: e => { opcoesDocs.anexoCert = e.target.checked; guardarOpcoes(); } });
     const instrs = (dados && dados.instrumentos) || [];
+    // Data e hora nas fotos: com = faixa desenhada na imagem (igual ao app); sem = imagem limpa, sem texto
+    const chkDataFoto = h('input', { type: 'checkbox', checked: opcoesDocs.dataFoto !== false, onchange: e => { opcoesDocs.dataFoto = e.target.checked; guardarOpcoes(); } });
+    if (podeDocs) {
+      caixaGerar.appendChild(h('label', { class: 'flag' }, chkDataFoto, 'Data, hora, filial e seção nas fotos (como aparecem no app)'));
+      caixaGerar.appendChild(h('p', { class: 'peq', text: 'Desmarcado, as fotos saem limpas, sem nenhum texto. Fotos tiradas antes da versão 1.9.6 já têm a faixa gravada e saem com ela de qualquer jeito.' }));
+    }
     if (podeDocs) {
       caixaGerar.appendChild(h('label', { class: 'rot', text: 'Instrumentos de medição na AET' }));
       caixaGerar.appendChild(selInstr);
@@ -1230,7 +1258,7 @@ async function telaDocumentos(app) {
       if (v > hojeIso()) { toast('A data de emissão não pode ser futura.'); return null; }
       return v;
     };
-    const extras = () => ({ periodoIni: inpIni.value, periodoFim: inpFim.value, incluirRiscosNovos: chkRiscos.checked, instrumentos: selInstr.value, anexarCertificados: selInstr.value === 'COMPLETO' && chkCert.checked });
+    const extras = () => ({ periodoIni: inpIni.value, periodoFim: inpFim.value, incluirRiscosNovos: chkRiscos.checked, instrumentos: selInstr.value, anexarCertificados: selInstr.value === 'COMPLETO' && chkCert.checked, dataNasFotos: chkDataFoto.checked });
     if (podeDocs) caixaGerar.appendChild(h('button', { class: 'bt larga', text: 'Gerar AET da filial', onclick: () => { const d = emissao(); if (d && alertaInstr()) gerar(Object.assign({ tipo: 'AET', dataEmissao: d }, extras())); } }));
     const secoes = (dados && dados.secoes && dados.secoes.length) ? dados.secoes : secoesDe(fil);
     const selSec = h('select', { class: 'inp' }, h('option', { value: '', text: 'Escolha a seção' }), secoes.map(x => h('option', { value: x, text: x })));
@@ -2089,7 +2117,7 @@ function renderCampo(c, escopo, caminho) {
   let el;
   if (c.tipo === 'info') el = h('div', { class: 'info', text: c.rotulo });
   else {
-    el = h('div', { class: 'campo t-' + c.tipo }, rotuloDe(c), c.ajuda ? h('div', { class: 'ajuda', text: c.ajuda }) : null);
+    el = h('div', { class: 'campo t-' + c.tipo + (c.leituraDe ? ' leitura' : '') }, rotuloDe(c), c.ajuda ? h('div', { class: 'ajuda', text: c.ajuda }) : null);
     const ctl = (CONTROLES[c.tipo] || CONTROLES.texto)(c, escopo, path);
     el.appendChild(ctl);
   }
@@ -2437,7 +2465,8 @@ function controleArquivos(c, esc, path, modo) {
     for (const id of ids) {
       const a = reg.anexos.find(x => x.id === id);
       if (!a) continue;
-      const u = a.removidoLocal ? null : await urlDoAnexo(id);
+      const vr = varianteComData(reg, id);
+      const u = a.removidoLocal ? null : ((vr && !vr.removidoLocal && await urlDoAnexo(vr.id)) || await urlDoAnexo(id));
       let vis;
       if (u && a.mime.startsWith('image/')) vis = h('img', { src: u, alt: '' });
       else vis = h('div', { class: 'thumb-ic', text: a.noOutro ? 'NO OUTRO APARELHO' : a.removidoLocal ? (a.mime.startsWith('image/') ? 'FOTO NO DRIVE' : 'NO DRIVE') : a.mime.startsWith('video/') ? 'VÍDEO' : a.mime === 'application/pdf' ? 'PDF' : 'ARQ' });
@@ -2448,8 +2477,13 @@ function controleArquivos(c, esc, path, modo) {
   async function receber(arquivos) {
     for (const arq of arquivos) {
       let blob = arq, ext = (arq.name.split('.').pop() || 'bin').toLowerCase();
-      if (arq.type.startsWith('image/') && !arq.type.includes('gif')) { blob = await processarFoto(arq, carimboLigado() ? textoCarimbo(reg) : null); ext = blob === arq ? ext : 'jpg'; }
+      let comData = null;
+      if (arq.type.startsWith('image/') && !arq.type.includes('gif')) {
+        const d = await processarFoto(arq, carimboLigado() ? textoCarimbo(reg) : null, true);
+        blob = d.limpa; comData = d.comData; ext = blob === arq ? ext : 'jpg';
+      }
       const a = await adicionarAnexo(reg, path, c, blob, c.rotulo.split('(')[0].trim(), ext);
+      if (comData) await adicionarAnexo(reg, PREF_COMDATA + a.id, c, comData, c.rotulo.split('(')[0].trim() + ' com data', 'jpg');
       if (a.grande) toast('Arquivo de ' + tamanho(blob.size) + ': grande demais para envio automático. Grave vídeos curtos (até ~1 min).', 7000);
       esc[c.id] = (Array.isArray(esc[c.id]) ? esc[c.id] : []).concat(a.id);
     }
@@ -2460,6 +2494,15 @@ function controleArquivos(c, esc, path, modo) {
   const aceita = modo === 'foto' ? 'image/*' : modo === 'video' ? 'video/*' : 'image/*,application/pdf';
   const inpCam = h('input', { type: 'file', accept: aceita, capture: 'environment', hidden: true, onchange: e => { receber([...e.target.files]); e.target.value = ''; } });
   const inpGal = h('input', { type: 'file', accept: aceita, multiple: true, hidden: true, onchange: e => { receber([...e.target.files]); e.target.value = ''; } });
+  if (c.leituraDe) {
+    // foto do visor do aparelho, logo abaixo do valor medido: só a câmera em destaque
+    box.appendChild(h('div', { class: 'linha-bts' },
+      h('button', { type: 'button', class: 'bt sec pequeno bt-leitura', text: '📷 Fotografar o aparelho', onclick: () => inpCam.click() }),
+      h('button', { type: 'button', class: 'bt sec pequeno', text: 'Galeria', onclick: () => inpGal.click() }), inpCam, inpGal));
+    box.appendChild(miniaturas);
+    desenhar();
+    return box;
+  }
   if (modo !== 'video') box.appendChild(flagCarimbo());
   box.appendChild(h('div', { class: 'linha-bts' },
     modo !== 'arquivo' ? h('button', { type: 'button', class: 'bt', text: modo === 'video' ? 'Gravar vídeo' : 'Câmera', onclick: () => inpCam.click() }) : h('button', { type: 'button', class: 'bt', text: 'Fotografar', onclick: () => { inpCam.accept = 'image/*'; inpCam.click(); } }),
