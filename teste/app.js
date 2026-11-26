@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.8';
+const VERSAO_APP = '1.9.10';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -420,7 +420,7 @@ async function telaEntrar(app, param) {
   if (!S.ajustes.url) {
     app.appendChild(h('div', { class: 'cartao destaque' }, h('h2', { text: 'Acesso' }),
       h('p', { text: 'Abra o link de acesso que o administrador enviou para você. Ele prepara este aparelho para o seu login.' }),
-      h('a', { class: 'bt sec', href: '#/ajustes', text: 'Sou o administrador' })));
+      h('button', { type: 'button', class: 'bt sec', text: 'Sou o administrador', onclick: () => { S.adminAberto = true; location.hash = '#/ajustes'; } })));
     return;
   }
   const email = h('input', { class: 'inp', type: 'email', autocomplete: 'username', value: (S.ajustes.usuario && S.ajustes.usuario.email) || S.ajustes.ultimoEmail || '', placeholder: 'seu@email.com' });
@@ -428,8 +428,18 @@ async function telaEntrar(app, param) {
   const codigo = h('input', { class: 'inp', autocomplete: 'one-time-code', placeholder: 'XXXX-XXXX', style: 'text-transform:uppercase' });
   const nova1 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password' });
   const nova2 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password' });
-  let modoAtivar = false;
+  let modoAtivar = false, modoEsqueci = false, porEmail = false;
   const caixa = h('div', { class: 'cartao destaque' });
+  async function pedirCodigo() {
+    const em = email.value.trim();
+    if (!em) { toast('Digite o seu e-mail.'); return; }
+    try {
+      toast('Enviando o código...', 20000);
+      const j = await api0({ acao: 'senha-esqueci', email: em });
+      toast(j.mensagem || 'Código enviado.', 8000);
+      modoEsqueci = false; modoAtivar = true; porEmail = true; desenhar();
+    } catch (e) { toast(e.message, 7000); }
+  }
   async function concluir(j) {
     S.ajustes = Object.assign({}, S.ajustes, { token: j.token, expira: j.expira, usuario: j.usuario, ultimoEmail: j.usuario.email, avaliador: String(j.usuario.nome || j.usuario.email).toUpperCase() });
     await DB.kvSet('ajustes', S.ajustes);
@@ -453,18 +463,27 @@ async function telaEntrar(app, param) {
   }
   function desenhar() {
     caixa.innerHTML = '';
-    caixa.appendChild(h('h2', { text: modoAtivar ? 'Primeiro acesso' : 'Entrar' }));
+    if (modoEsqueci) {
+      caixa.appendChild(h('h2', { text: 'Esqueci minha senha' }));
+      caixa.appendChild(h('p', { class: 'peq', text: 'Digite o e-mail da sua conta. Vamos enviar um código de verificação para ele; com o código você cria uma senha nova.' }));
+      caixa.appendChild(h('label', { class: 'rot', text: 'E-mail' })); caixa.appendChild(email);
+      caixa.appendChild(h('button', { class: 'bt larga', text: 'Enviar código para o meu e-mail', onclick: pedirCodigo }));
+      caixa.appendChild(h('button', { class: 'bt sec larga', text: 'Já recebi o código', onclick: () => { modoEsqueci = false; modoAtivar = true; porEmail = true; desenhar(); } }));
+      caixa.appendChild(h('button', { class: 'bt sec larga', text: 'Voltar', onclick: () => { modoEsqueci = false; desenhar(); } }));
+      return;
+    }
+    caixa.appendChild(h('h2', { text: modoAtivar ? (porEmail ? 'Criar nova senha' : 'Primeiro acesso') : 'Entrar' }));
     caixa.appendChild(h('label', { class: 'rot', text: 'E-mail' })); caixa.appendChild(email);
     if (modoAtivar) {
-      caixa.appendChild(h('label', { class: 'rot', text: 'Código de ativação (enviado pelo administrador)' })); caixa.appendChild(codigo);
+      caixa.appendChild(h('label', { class: 'rot', text: porEmail ? 'Código de verificação (enviado para o seu e-mail)' : 'Código de ativação (enviado pelo administrador)' })); caixa.appendChild(codigo);
       caixa.appendChild(h('label', { class: 'rot', text: 'Crie sua senha (mínimo 8 caracteres, com letras e números)' })); caixa.appendChild(nova1);
       caixa.appendChild(h('label', { class: 'rot', text: 'Repita a senha' })); caixa.appendChild(nova2);
     } else {
       caixa.appendChild(h('label', { class: 'rot', text: 'Senha' })); caixa.appendChild(senha);
     }
-    caixa.appendChild(h('button', { class: 'bt larga', text: modoAtivar ? 'Ativar e entrar' : 'Entrar', onclick: enviar }));
-    caixa.appendChild(h('button', { class: 'bt sec larga', text: modoAtivar ? 'Já tenho senha' : 'Primeiro acesso ou novo código', onclick: () => { modoAtivar = !modoAtivar; desenhar(); } }));
-    caixa.appendChild(h('p', { class: 'peq', text: 'Esqueceu a senha? Peça um novo código ao administrador.' }));
+    caixa.appendChild(h('button', { class: 'bt larga', text: modoAtivar ? (porEmail ? 'Salvar nova senha e entrar' : 'Ativar e entrar') : 'Entrar', onclick: enviar }));
+    caixa.appendChild(h('button', { class: 'bt sec larga', text: modoAtivar ? 'Já tenho senha' : 'Primeiro acesso (código do administrador)', onclick: () => { modoAtivar = !modoAtivar; porEmail = false; desenhar(); } }));
+    if (!modoAtivar) caixa.appendChild(h('button', { type: 'button', class: 'bt sec larga', text: 'Esqueci minha senha', onclick: () => { modoEsqueci = true; desenhar(); } }));
   }
   desenhar();
   app.appendChild(caixa);
@@ -504,6 +523,13 @@ async function api(corpo, tempo) {
     if (!j.ok) {
       const e = new Error(j.erro || 'Erro no servidor.'); e.codigo = j.codigo;
       if (j.codigo === 'SESSAO' && !S.ajustes.chave && S.ajustes.token) { S.ajustes.token = ''; await DB.kvSet('ajustes', S.ajustes); setTimeout(() => { location.hash = '#/entrar'; }, 300); }
+      // chave recusada num aparelho que já foi de um usuário da equipe (ex.: senha colada no campo Chave): volta para o login
+      const ex = S.ajustes.usuario || {};
+      if (j.codigo === 'SESSAO' && S.ajustes.chave && ex.email && ex.email !== 'admin' && ex.perfil !== 'ADMIN') {
+        S.ajustes.chave = ''; S.ajustes.token = ''; await DB.kvSet('ajustes', S.ajustes);
+        e.message = 'Entre com o seu e-mail e a sua senha.';
+        setTimeout(() => { location.hash = '#/entrar'; }, 300);
+      }
       throw e;
     }
     if (j.usuario && corpo.acao !== 'usuarios-listar') { S.ajustes.usuario = j.usuario; if (!S.ajustes.chave && j.usuario.nome) S.ajustes.avaliador = String(j.usuario.nome).toUpperCase(); DB.kvSet('ajustes', S.ajustes); }
@@ -979,7 +1005,7 @@ function telaRegistros(app) {
 async function telaAjustes(app) {
   definirTopo('Ajustes', false);
   const url = h('input', { class: 'inp', value: S.ajustes.url, placeholder: 'https://script.google.com/macros/s/.../exec', autocomplete: 'off' });
-  const chave = h('input', { class: 'inp', value: S.ajustes.chave, type: 'password', autocomplete: 'off' });
+  const chave = h('input', { class: 'inp', value: S.ajustes.chave, type: 'password', autocomplete: 'new-password', name: 'chave-servidor' });
   const aval = h('input', { class: 'inp', value: S.ajustes.avaliador, placeholder: 'Nome que aparece nos registros' });
   async function salvar() {
     S.ajustes = Object.assign({}, S.ajustes, { url: url.value.trim(), chave: chave.value.trim(), avaliador: aval.value.trim() });
@@ -996,6 +1022,13 @@ async function telaAjustes(app) {
       h('div', { class: 'linha-bts' },
         h('button', { class: 'bt', text: 'Baixar formulários', onclick: async () => { if (await baixarConfig(false)) location.hash = '#/'; } }),
         h('button', { class: 'bt sec', text: 'Sair da conta', onclick: sairDaConta }))));
+  } else if (!ehAdmin() && !S.adminAberto) {
+    // Fora da conta: a equipe vê só o login. O cartão do servidor fica escondido atrás de "Sou o administrador".
+    app.appendChild(h('div', { class: 'cartao destaque' },
+      h('h3', { text: 'Você não está conectado' }),
+      h('p', { class: 'peq', text: 'Entre com o seu e-mail e a sua senha. Os registros guardados neste aparelho continuam aqui e são enviados depois do login.' }),
+      h('a', { class: 'bt larga', href: '#/entrar', text: 'Entrar com e-mail e senha' }),
+      h('button', { type: 'button', class: 'bt sec mini', text: 'Sou o administrador', onclick: () => { S.adminAberto = true; rotear(); } })));
   } else app.appendChild(h('div', { class: 'cartao' },
     h('h3', { text: 'Servidor (administrador)' }),
     h('label', { class: 'rot', text: 'Endereço do servidor (termina em /exec)' }), url,
