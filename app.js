@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.16';
+const VERSAO_APP = '1.9.17';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -227,7 +227,9 @@ function instrumentosDisponiveis(filtro) {
   const out = [];
   lista.forEach((v, id) => {
     // filtro aceita alternativas separadas por | (ex.: 'Decibelímetro|Multifunção')
-    if (filtro && !String(filtro).toLowerCase().split('|').some(f => String(v.tipo || '').toLowerCase().includes(f.trim()))) return;
+    // sem acento e sem caixa: 'Termo' também acha 'Medidor de IBUTG (termômetro de globo)', que mede temperatura e umidade
+    const sa = x => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (filtro && !sa(filtro).split('|').some(f => sa(v.tipo).includes(f.trim()))) return;
     out.push({ id, rotulo: [v.tipo, [v.fabricante, v.modelo].filter(Boolean).join(' '), v.serie ? 'nº ' + v.serie : ''].filter(Boolean).join(' - ') || 'Instrumento' });
   });
   return out;
