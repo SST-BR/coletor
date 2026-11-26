@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.6';
+const VERSAO_APP = '1.9.10';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -420,7 +420,7 @@ async function telaEntrar(app, param) {
   if (!S.ajustes.url) {
     app.appendChild(h('div', { class: 'cartao destaque' }, h('h2', { text: 'Acesso' }),
       h('p', { text: 'Abra o link de acesso que o administrador enviou para você. Ele prepara este aparelho para o seu login.' }),
-      h('a', { class: 'bt sec', href: '#/ajustes', text: 'Sou o administrador' })));
+      h('button', { type: 'button', class: 'bt sec', text: 'Sou o administrador', onclick: () => { S.adminAberto = true; location.hash = '#/ajustes'; } })));
     return;
   }
   const email = h('input', { class: 'inp', type: 'email', autocomplete: 'username', value: (S.ajustes.usuario && S.ajustes.usuario.email) || S.ajustes.ultimoEmail || '', placeholder: 'seu@email.com' });
@@ -428,8 +428,18 @@ async function telaEntrar(app, param) {
   const codigo = h('input', { class: 'inp', autocomplete: 'one-time-code', placeholder: 'XXXX-XXXX', style: 'text-transform:uppercase' });
   const nova1 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password' });
   const nova2 = h('input', { class: 'inp', type: 'password', autocomplete: 'new-password' });
-  let modoAtivar = false;
+  let modoAtivar = false, modoEsqueci = false, porEmail = false;
   const caixa = h('div', { class: 'cartao destaque' });
+  async function pedirCodigo() {
+    const em = email.value.trim();
+    if (!em) { toast('Digite o seu e-mail.'); return; }
+    try {
+      toast('Enviando o código...', 20000);
+      const j = await api0({ acao: 'senha-esqueci', email: em });
+      toast(j.mensagem || 'Código enviado.', 8000);
+      modoEsqueci = false; modoAtivar = true; porEmail = true; desenhar();
+    } catch (e) { toast(e.message, 7000); }
+  }
   async function concluir(j) {
     S.ajustes = Object.assign({}, S.ajustes, { token: j.token, expira: j.expira, usuario: j.usuario, ultimoEmail: j.usuario.email, avaliador: String(j.usuario.nome || j.usuario.email).toUpperCase() });
     await DB.kvSet('ajustes', S.ajustes);
@@ -453,18 +463,27 @@ async function telaEntrar(app, param) {
   }
   function desenhar() {
     caixa.innerHTML = '';
-    caixa.appendChild(h('h2', { text: modoAtivar ? 'Primeiro acesso' : 'Entrar' }));
+    if (modoEsqueci) {
+      caixa.appendChild(h('h2', { text: 'Esqueci minha senha' }));
+      caixa.appendChild(h('p', { class: 'peq', text: 'Digite o e-mail da sua conta. Vamos enviar um código de verificação para ele; com o código você cria uma senha nova.' }));
+      caixa.appendChild(h('label', { class: 'rot', text: 'E-mail' })); caixa.appendChild(email);
+      caixa.appendChild(h('button', { class: 'bt larga', text: 'Enviar código para o meu e-mail', onclick: pedirCodigo }));
+      caixa.appendChild(h('button', { class: 'bt sec larga', text: 'Já recebi o código', onclick: () => { modoEsqueci = false; modoAtivar = true; porEmail = true; desenhar(); } }));
+      caixa.appendChild(h('button', { class: 'bt sec larga', text: 'Voltar', onclick: () => { modoEsqueci = false; desenhar(); } }));
+      return;
+    }
+    caixa.appendChild(h('h2', { text: modoAtivar ? (porEmail ? 'Criar nova senha' : 'Primeiro acesso') : 'Entrar' }));
     caixa.appendChild(h('label', { class: 'rot', text: 'E-mail' })); caixa.appendChild(email);
     if (modoAtivar) {
-      caixa.appendChild(h('label', { class: 'rot', text: 'Código de ativação (enviado pelo administrador)' })); caixa.appendChild(codigo);
+      caixa.appendChild(h('label', { class: 'rot', text: porEmail ? 'Código de verificação (enviado para o seu e-mail)' : 'Código de ativação (enviado pelo administrador)' })); caixa.appendChild(codigo);
       caixa.appendChild(h('label', { class: 'rot', text: 'Crie sua senha (mínimo 8 caracteres, com letras e números)' })); caixa.appendChild(nova1);
       caixa.appendChild(h('label', { class: 'rot', text: 'Repita a senha' })); caixa.appendChild(nova2);
     } else {
       caixa.appendChild(h('label', { class: 'rot', text: 'Senha' })); caixa.appendChild(senha);
     }
-    caixa.appendChild(h('button', { class: 'bt larga', text: modoAtivar ? 'Ativar e entrar' : 'Entrar', onclick: enviar }));
-    caixa.appendChild(h('button', { class: 'bt sec larga', text: modoAtivar ? 'Já tenho senha' : 'Primeiro acesso ou novo código', onclick: () => { modoAtivar = !modoAtivar; desenhar(); } }));
-    caixa.appendChild(h('p', { class: 'peq', text: 'Esqueceu a senha? Peça um novo código ao administrador.' }));
+    caixa.appendChild(h('button', { class: 'bt larga', text: modoAtivar ? (porEmail ? 'Salvar nova senha e entrar' : 'Ativar e entrar') : 'Entrar', onclick: enviar }));
+    caixa.appendChild(h('button', { class: 'bt sec larga', text: modoAtivar ? 'Já tenho senha' : 'Primeiro acesso (código do administrador)', onclick: () => { modoAtivar = !modoAtivar; porEmail = false; desenhar(); } }));
+    if (!modoAtivar) caixa.appendChild(h('button', { type: 'button', class: 'bt sec larga', text: 'Esqueci minha senha', onclick: () => { modoEsqueci = true; desenhar(); } }));
   }
   desenhar();
   app.appendChild(caixa);
@@ -504,6 +523,13 @@ async function api(corpo, tempo) {
     if (!j.ok) {
       const e = new Error(j.erro || 'Erro no servidor.'); e.codigo = j.codigo;
       if (j.codigo === 'SESSAO' && !S.ajustes.chave && S.ajustes.token) { S.ajustes.token = ''; await DB.kvSet('ajustes', S.ajustes); setTimeout(() => { location.hash = '#/entrar'; }, 300); }
+      // chave recusada num aparelho que já foi de um usuário da equipe (ex.: senha colada no campo Chave): volta para o login
+      const ex = S.ajustes.usuario || {};
+      if (j.codigo === 'SESSAO' && S.ajustes.chave && ex.email && ex.email !== 'admin' && ex.perfil !== 'ADMIN') {
+        S.ajustes.chave = ''; S.ajustes.token = ''; await DB.kvSet('ajustes', S.ajustes);
+        e.message = 'Entre com o seu e-mail e a sua senha.';
+        setTimeout(() => { location.hash = '#/entrar'; }, 300);
+      }
       throw e;
     }
     if (j.usuario && corpo.acao !== 'usuarios-listar') { S.ajustes.usuario = j.usuario; if (!S.ajustes.chave && j.usuario.nome) S.ajustes.avaliador = String(j.usuario.nome).toUpperCase(); DB.kvSet('ajustes', S.ajustes); }
@@ -979,7 +1005,7 @@ function telaRegistros(app) {
 async function telaAjustes(app) {
   definirTopo('Ajustes', false);
   const url = h('input', { class: 'inp', value: S.ajustes.url, placeholder: 'https://script.google.com/macros/s/.../exec', autocomplete: 'off' });
-  const chave = h('input', { class: 'inp', value: S.ajustes.chave, type: 'password', autocomplete: 'off' });
+  const chave = h('input', { class: 'inp', value: S.ajustes.chave, type: 'password', autocomplete: 'new-password', name: 'chave-servidor' });
   const aval = h('input', { class: 'inp', value: S.ajustes.avaliador, placeholder: 'Nome que aparece nos registros' });
   async function salvar() {
     S.ajustes = Object.assign({}, S.ajustes, { url: url.value.trim(), chave: chave.value.trim(), avaliador: aval.value.trim() });
@@ -996,6 +1022,13 @@ async function telaAjustes(app) {
       h('div', { class: 'linha-bts' },
         h('button', { class: 'bt', text: 'Baixar formulários', onclick: async () => { if (await baixarConfig(false)) location.hash = '#/'; } }),
         h('button', { class: 'bt sec', text: 'Sair da conta', onclick: sairDaConta }))));
+  } else if (!ehAdmin() && !S.adminAberto) {
+    // Fora da conta: a equipe vê só o login. O cartão do servidor fica escondido atrás de "Sou o administrador".
+    app.appendChild(h('div', { class: 'cartao destaque' },
+      h('h3', { text: 'Você não está conectado' }),
+      h('p', { class: 'peq', text: 'Entre com o seu e-mail e a sua senha. Os registros guardados neste aparelho continuam aqui e são enviados depois do login.' }),
+      h('a', { class: 'bt larga', href: '#/entrar', text: 'Entrar com e-mail e senha' }),
+      h('button', { type: 'button', class: 'bt sec mini', text: 'Sou o administrador', onclick: () => { S.adminAberto = true; rotear(); } })));
   } else app.appendChild(h('div', { class: 'cartao' },
     h('h3', { text: 'Servidor (administrador)' }),
     h('label', { class: 'rot', text: 'Endereço do servidor (termina em /exec)' }), url,
@@ -1520,10 +1553,11 @@ function feitoNoAparelho(m, l, filial) {
     if (r.form !== m.form || r.filial !== filial) return false;
     if (m.form === 'CHECKOUT') return true;
     const v = r.valores || {};
-    if (secaoNorm(r.secao || v.secao) !== secaoNorm(l.secao)) return false;
-    if (PLANO_POR_FUNCAO[m.form]) return semAcento(r.funcao).trim() === semAcento(l.funcao).trim();
-    const fs = Array.isArray(v.funcoes) ? v.funcoes.map(x => semAcento(x).trim()) : [];
-    return !fs.length || fs.includes(semAcento(l.funcao).trim());
+    const mesmaSec = secaoNorm(r.secao || v.secao) === secaoNorm(l.secao), fn = semAcento(l.funcao).trim();
+    if (PLANO_POR_FUNCAO[m.form]) return mesmaSec && semAcento(r.funcao).trim() === fn;
+    const fs = Array.isArray(v.funcoes) ? v.funcoes.map(funcaoQualificada) : [];
+    if (!fs.length) return mesmaSec;
+    return fs.some(x => semAcento(x.f).trim() === fn && (x.s ? secaoNorm(x.s) === secaoNorm(l.secao) : mesmaSec));
   });
 }
 
@@ -1997,7 +2031,9 @@ async function telaRegistro(app, id) {
         e.target.value = v;
       }
       reg.secao = v; reg.funcao = ''; reg.ghe = gheDe(reg.filial, v); inpGhe.value = reg.ghe;
-      encherFuncoes(); mostrarInfo(); alterou();
+      encherFuncoes(); mostrarInfo();
+      S.editor.dependentes.filter(d => d.campo === '__secaoRegistro').forEach(d => d.mudouSecao());
+      alterou();
     } }, h('option', { value: '', text: 'Escolha a seção' }), secoesDe(reg.filial).map(x => h('option', { value: x, text: x })),
       (reg.secao && !secoesDe(reg.filial).includes(reg.secao)) ? h('option', { value: reg.secao, text: reg.secao }) : null,
       h('option', { value: '__outra', text: 'Outra (digitar)...' }));
@@ -2139,6 +2175,43 @@ function chips(opcoes, valor, multi, aoMudar) {
   marcar();
   box.definir = v => { valor = v; marcar(); };
   return box;
+}
+
+/**
+ * Funções de outras seções num campo "funções" (ex.: antecâmara usada por todo o setor de perecíveis).
+ * Ficam gravadas como "FUNÇÃO [SEÇÃO]", para o plano e a AET saberem de qual seção é cada função.
+ */
+function funcaoQualificada(x) { const m = String(x || '').match(/^(.*) \[(.+)\]$/); return m ? { f: m[1].trim(), s: m[2].trim() } : { f: String(x || '').trim(), s: null }; }
+function escolherFuncoesOutrasSecoes(filial, secAtual, atuais, aoSalvar) {
+  let sel = new Set(atuais);
+  const lista = h('div', { class: 'fun-outras' });
+  const secoes = secoesDe(filial).filter(s => s !== secAtual && funcoesDe(filial, s).length);
+  const busca = h('input', { class: 'inp', placeholder: 'Filtrar seção (ex.: açougue, FLV, frios, padaria)', oninput: () => desenhar() });
+  function desenhar() {
+    lista.innerHTML = '';
+    const q = semAcento(busca.value).trim();
+    secoes.filter(s => !q || semAcento(s).includes(q)).forEach(s => {
+      const fs = funcoesDe(filial, s), quals = fs.map(f => f + ' [' + s + ']');
+      const marcadas = quals.filter(x => sel.has(x)).length;
+      const ch = chips(fs, fs.filter(f => sel.has(f + ' [' + s + ']')), true, v => {
+        quals.forEach(x => sel.delete(x)); v.forEach(f => sel.add(f + ' [' + s + ']')); desenhar();
+      });
+      lista.appendChild(h('div', { class: 'sec-grupo' },
+        h('div', { class: 'sec-cab' }, h('strong', { text: s + (marcadas ? ' (' + marcadas + ')' : '') }),
+          h('button', { type: 'button', class: 'bt sec mini', text: marcadas === quals.length ? 'Desmarcar todas' : 'Marcar todas', onclick: () => {
+            if (marcadas === quals.length) quals.forEach(x => sel.delete(x)); else quals.forEach(x => sel.add(x)); desenhar();
+          } })), ch));
+    });
+    if (!lista.childNodes.length) lista.appendChild(h('p', { class: 'peq', text: 'Nenhuma seção encontrada.' }));
+  }
+  desenhar();
+  let fechar;
+  fechar = modal(h('div', null, h('h3', { text: 'Funções de outras seções' }),
+    h('p', { class: 'peq', text: 'Marque as funções que também acessam este local. No plano e na AET, cada uma conta na seção de origem.' }),
+    busca, lista,
+    h('div', { class: 'linha-bts' },
+      h('button', { class: 'bt', text: 'Aplicar', onclick: () => { aoSalvar([...sel]); fechar(); } }),
+      h('button', { class: 'bt sec', text: 'Cancelar', onclick: () => fechar() }))));
 }
 
 const CONTROLES = {
@@ -2315,7 +2388,15 @@ const CONTROLES = {
       if (!sec) { box.appendChild(h('div', { class: 'peq', text: 'Escolha a seção acima para listar as funções.' })); return; }
       const ops = funcoesDe(reg.filial, sec);
       (esc[c.id] || []).forEach(x => { if (!ops.includes(x)) ops.push(x); });
-      box.appendChild(chips(ops, esc[c.id] || [], true, v => { esc[c.id] = v; alterou(); }));
+      if (!funcoesDe(reg.filial, sec).length) box.appendChild(h('div', { class: 'peq', text: 'Esta seção não tem funções no quadro de lotação (ex.: antecâmara, área comum). Use "Funções de outras seções" para escolher quem acessa.' }));
+      box.appendChild(chips(ops, esc[c.id] || [], true, v => { esc[c.id] = v; alterou(); desenhar(); }));
+      const daSec = funcoesDe(reg.filial, sec), todas = daSec.length && daSec.every(x => (esc[c.id] || []).includes(x));
+      if (daSec.length > 1) box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: todas ? 'Desmarcar todas da seção' : 'Marcar todas da seção', onclick: () => {
+        const atual = esc[c.id] || [];
+        esc[c.id] = todas ? atual.filter(x => !daSec.includes(x)) : atual.concat(daSec.filter(x => !atual.includes(x)));
+        alterou(); desenhar();
+      } }));
+      box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: '+ Funções de outras seções', onclick: () => escolherFuncoesOutrasSecoes(reg.filial, sec, esc[c.id] || [], v => { esc[c.id] = v; alterou(); desenhar(); }) }));
       box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: '+ Outra função', onclick: async () => {
         const v = await perguntar('Nome da função:');
         if (!v) return;
@@ -2325,7 +2406,8 @@ const CONTROLES = {
         esc[c.id] = (esc[c.id] || []).concat(v.toUpperCase()); alterou(); desenhar();
       } }));
     };
-    S.editor.dependentes.push({ escopo: esc, campo: c.deSecao, mudouSecao: () => { esc[c.id] = []; desenhar(); } });
+    // trocou a seção: limpa as funções da seção anterior (as de outras seções continuam)
+    S.editor.dependentes.push({ escopo: esc, campo: c.deSecao || '__secaoRegistro', mudouSecao: () => { esc[c.id] = (esc[c.id] || []).filter(x => funcaoQualificada(x).s); desenhar(); } });
     desenhar();
     return box;
   },
