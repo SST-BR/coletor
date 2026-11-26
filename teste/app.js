@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.12';
+const VERSAO_APP = '1.9.13';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -793,6 +793,7 @@ async function rotear() {
   if (rota[0] === 'plano') return telaPlano(app);
   if (rota[0] === 'painel') return ehAdmin() ? telaPainel(app) : telaInicio(app);
   if (rota[0] === 'calor') return ehAdmin() ? telaCalor(app) : telaInicio(app);
+  if (rota[0] === 'ambiental') return ehAdmin() ? telaAmbiental(app) : telaInicio(app);
   return telaInicio(app);
 }
 
@@ -1807,44 +1808,208 @@ function calcCalor(v) {
   return { ibutg, M, na: L.na, le: L.le, nivel, texto, insal, avisos, sit, somaT };
 }
 
-async function telaCalor(app) {
-  definirTopo('Calor: prévia dos limites', true);
-  const fil = S.ctx.filial;
-  const regs = registrosVisiveis().filter(r => r.form === 'CALOR' && r.filial === fil).sort((a, b) => String(a.secao).localeCompare(String(b.secao)));
-  app.appendChild(h('div', { class: 'cartao fino' },
-    h('p', { class: 'peq', text: 'Prévia calculada no aparelho com as leituras registradas, pela NHO 06 (2017), NR-15 Anexo 3 e NR-09 Anexo III. Serve para orientar a avaliação; a conclusão do laudo continua sendo sua. Visível só para o administrador.' })));
-  if (!regs.length) { app.appendChild(h('p', { class: 'vazio', text: 'Nenhuma avaliação de calor na filial ' + (fil || '') + ' neste aparelho. Se a equipe já registrou, sincronize em Registros.' })); return; }
-  const cont = { alto: 0, medio: 0, baixo: 0, inc: 0 };
-  const lista = h('div');
-  regs.forEach(r => {
-    const v = r.valores || {}, R = calcCalor(v);
-    const funcs = (v.funcoes && v.funcoes.length ? v.funcoes : (r.funcao ? [r.funcao] : [])).map(x => funcaoQualificada(x).f).join(', ');
-    if (R.erro) cont.inc++; else cont[R.nivel]++;
-    const cab = h('div', { class: 'calor-cab' },
-      h('div', null, h('strong', { text: (v.local || 'Sem local') }), h('div', { class: 'peq', text: [r.secao, funcs].filter(Boolean).join(' · ') + (r.status !== 'concluido' ? ' · rascunho' : '') })),
-      R.erro ? h('span', { class: 'selo cinza', text: 'Incompleta' }) : h('span', { class: 'selo ' + R.nivel, text: R.texto }));
-    const corpo = h('div');
-    if (R.erro) corpo.appendChild(h('p', { class: 'peq', text: R.erro }));
-    else {
-      corpo.appendChild(h('div', { class: 'calor-num' },
-        h('div', null, h('small', { text: 'IBUTG médio' }), h('b', { text: mostraNum(R.ibutg) + ' °C' })),
-        h('div', null, h('small', { text: 'M médio' }), h('b', { text: R.M + ' W' })),
-        h('div', null, h('small', { text: 'Nível de ação' }), h('b', { text: mostraNum(R.na) + ' °C' })),
-        h('div', null, h('small', { text: 'Limite de exposição' }), h('b', { text: mostraNum(R.le) + ' °C' }))));
-      corpo.appendChild(h('p', { class: 'peq', text: R.insal }));
-    }
-    if (R.sit && R.sit.length) corpo.appendChild(h('table', { class: 'tab-calor' },
-      h('tr', null, ['Situação', 'IBUTG', 'Tempo', 'M'].map(t => h('th', { text: t }))),
-      R.sit.map(x => h('tr', null, h('td', { text: x.desc + (x.atividade ? ' (' + x.atividade + ')' : '') }), h('td', { text: x.ib === null ? '-' : mostraNum(x.ib) + (x.origem === 'lido no aparelho' ? '*' : '') }),
-        h('td', { text: x.t ? x.t + ' min' : '-' }), h('td', { text: x.M === null ? '-' : x.M + ' W' })))));
-    (R.avisos || []).forEach(a => corpo.appendChild(h('div', { class: 'aviso-calor', text: '⚠ ' + a })));
-    lista.appendChild(h('div', { class: 'cartao calor-card' }, cab, corpo, h('a', { class: 'bt sec mini', href: '#/r/' + r.id, text: 'Abrir registro' })));
+/* ===================== AVALIAÇÕES AMBIENTAIS: PRÉVIA (só administrador) =====================
+ * Cada avaliação é enquadrada em três critérios:
+ *  LIP    = insalubridade (NR-15)
+ *  PGR    = gerenciamento (NR-09 e NHO da Fundacentro: nível de ação e limite de exposição)
+ *  LTCAT  = aposentadoria especial (Decreto 3.048/99, Anexo IV)
+ * e, nas avaliações de conforto, NR-17 (AET). É uma prévia: a conclusão do laudo é do avaliador.
+ */
+const numV = x => { const t = String(x === undefined || x === null ? '' : x).trim(); if (!t) return null; const n = Number(t.replace(',', '.')); return isNaN(n) ? null : n; };
+const r1 = x => Math.round(x * 10) / 10;
+function crit(nivel, rotulo, texto) { return { nivel, rotulo, texto }; }
+function funcoesDoReg(r) {
+  const v = r.valores || {};
+  const fs = (Array.isArray(v.funcoes) && v.funcoes.length ? v.funcoes : (r.funcao ? [r.funcao] : [])).map(x => { const q = funcaoQualificada(x); return q.f + (q.s ? ' (' + q.s + ')' : ''); });
+  return fs.join(', ');
+}
+
+function avalDosimetria(r) {
+  const v = r.valores || {}, av = [];
+  const TE = numV(v.jornada) || 480, Ta = numV(v.tempoAmostra);
+  if (!numV(v.jornada)) av.push('Jornada não informada: considerada 480 min (8 h).');
+  let proj = 1;
+  if (Ta && Ta > 0) proj = TE / Ta; else av.push('Tempo de amostragem não informado: a dose foi tomada como a da jornada inteira.');
+  const d5m = numV(v.dose5), l5 = numV(v.lavg5), d3m = numV(v.dose3), ne = numV(v.leq3);
+  let D5 = d5m !== null ? d5m * proj : (l5 !== null ? (TE / 60) / (8 / Math.pow(2, (l5 - 85) / 5)) * 100 : null);
+  let NEN = ne !== null ? ne + 10 * Math.log10(TE / 480) : (d3m !== null && d3m > 0 ? 85 + 10 * Math.log10(d3m * proj / 100) : null);
+  const ci = numV(v.calIni), cf = numV(v.calFim);
+  if (ci !== null && cf !== null && Math.abs(cf - ci) > 1) av.push('A calibração variou ' + mostraNum(r1(Math.abs(cf - ci))) + ' dB entre o início e o fim: acima de 1 dB a medição não é válida (NHO 01).');
+  if (v.representativa === 'Não') av.push('Amostragem marcada como não representativa da jornada habitual' + (v.justRep ? ': ' + v.justRep : '.'));
+  const lp = numV(v.lpico); if (lp !== null && lp > 120) av.push('Pico de ' + mostraNum(lp) + ' dB(C): conferir ruído de impacto (NR-15, Anexo 2: limite de 120 dB(C) em resposta rápida).');
+  const nums = [['Dose q=5 na jornada', D5 === null ? '-' : mostraNum(r1(D5)) + ' %'], ['Lavg q=5', l5 === null ? '-' : mostraNum(l5) + ' dB(A)'], ['NEN (NHO 01)', NEN === null ? '-' : mostraNum(r1(NEN)) + ' dB(A)'], ['Jornada', TE + ' min']];
+  const lip = D5 === null ? crit('cinza', 'LIP (NR-15, Anexo 1)', 'Faltam a dose ou o Lavg no canal q=5.')
+    : D5 > 100 ? crit('alto', 'LIP (NR-15, Anexo 1)', 'Dose de ' + mostraNum(r1(D5)) + '% na jornada, acima do limite de tolerância. Indicativo de insalubridade em grau médio (20%), salvo neutralização comprovada por EPI.')
+    : crit('baixo', 'LIP (NR-15, Anexo 1)', 'Dose de ' + mostraNum(r1(D5)) + '% na jornada, dentro do limite de tolerância.');
+  const pgr = NEN === null ? crit('cinza', 'PGR (NR-09 e NHO 01)', 'Faltam o NE ou a dose no canal q=3.')
+    : NEN > 85 ? crit('alto', 'PGR (NR-09 e NHO 01)', 'NEN de ' + mostraNum(r1(NEN)) + ' dB(A), acima do limite de exposição (85 dB(A)). Medidas corretivas imediatas e PCA.')
+    : NEN > 82 ? crit('medio', 'PGR (NR-09 e NHO 01)', 'NEN de ' + mostraNum(r1(NEN)) + ' dB(A), acima do nível de ação (82 dB(A), metade da dose). Medidas preventivas e PCA.')
+    : crit('baixo', 'PGR (NR-09 e NHO 01)', 'NEN de ' + mostraNum(r1(NEN)) + ' dB(A), abaixo do nível de ação.');
+  const ltcat = NEN === null ? crit('cinza', 'LTCAT (Decreto 3.048/99)', 'Sem NEN para enquadrar.')
+    : NEN > 85 ? crit('alto', 'LTCAT (Decreto 3.048/99)', 'Enquadra como atividade especial: ruído acima de 85 dB(A) em NEN pela NHO 01 (Anexo IV, código 2.0.1). Para ruído, o EPI não afasta o enquadramento (STF, Tema 555).')
+    : crit('baixo', 'LTCAT (Decreto 3.048/99)', 'Não enquadra: NEN até 85 dB(A).');
+  return { titulo: funcoesDoReg(r) || 'Função não informada', sub: [r.secao, v.atividades ? String(v.atividades).slice(0, 80) : ''].filter(Boolean).join(' · '), nums, crits: [lip, pgr, ltcat], avisos: av };
+}
+
+function avalCalor(r) {
+  const v = r.valores || {}, R = calcCalor(v), solar = v.ambiente === 'Externo com carga solar direta';
+  const base = { titulo: v.local || 'Sem local', sub: [r.secao, funcoesDoReg(r)].filter(Boolean).join(' · '), avisos: R.avisos || [], tabela: R.sit };
+  if (R.erro) return Object.assign(base, { incompleto: R.erro, nums: R.ibutg ? [['IBUTG médio', mostraNum(R.ibutg) + ' °C']] : [], crits: [] });
+  base.nums = [['IBUTG médio', mostraNum(R.ibutg) + ' °C'], ['M médio', R.M + ' W'], ['Nível de ação', mostraNum(R.na) + ' °C'], ['Limite de exposição', mostraNum(R.le) + ' °C']];
+  const acima = R.nivel === 'alto';
+  base.crits = [
+    acima && !solar ? crit('alto', 'LIP (NR-15, Anexo 3)', 'IBUTG acima do limite de exposição em ambiente fechado ou com fonte artificial de calor: indicativo de insalubridade em grau médio (20%).')
+      : acima ? crit('cinza', 'LIP (NR-15, Anexo 3)', 'Acima do limite, mas em ambiente externo sem fonte artificial de calor: a NR-15 não caracteriza insalubridade.')
+      : crit('baixo', 'LIP (NR-15, Anexo 3)', 'IBUTG abaixo do limite de exposição.'),
+    R.nivel === 'alto' ? crit('alto', 'PGR (NR-09, Anexo III)', 'Acima do limite de exposição: medidas corretivas do item 4.2 e acompanhamento no PCMSO.')
+      : R.nivel === 'medio' ? crit('medio', 'PGR (NR-09, Anexo III)', 'Acima do nível de ação: medidas preventivas do item 4.1 (água fresca, trabalhos pesados nos horários amenos, vestimenta adequada).')
+      : crit('baixo', 'PGR (NR-09, Anexo III)', 'Abaixo do nível de ação.'),
+    acima && !solar ? crit('alto', 'LTCAT (Decreto 3.048/99)', 'Enquadra: temperatura anormal acima dos limites do Anexo 3 da NR-15 (Anexo IV, código 2.0.4).')
+      : crit('baixo', 'LTCAT (Decreto 3.048/99)', 'Não enquadra.')];
+  return base;
+}
+
+function avalPontosConforto(r) {
+  const f = form('CONFORTO_TERMICO'), g = f && f.campos.find(c => c.id === 'pontos'), cr = g && g.campos.find(c => c.tipo === 'resultado');
+  let fn = null; try { fn = cr ? new Function('return ' + cr.calc)() : null; } catch (e) { }
+  return ((r.valores || {}).pontos || []).map(p => {
+    let R = null; try { R = fn ? fn(p) : null; } catch (e) { }
+    const T = numV(p.temp), te = R && R.linhas && R.linhas.find(l => /efetiva/i.test(l.rotulo)), av = [];
+    if (p.correnteAr === 'Sim') av.push('Corrente de ar direcionada aos trabalhadores (NR-17, 17.8.4.2.1).');
+    if (te && (te.valor < 20 || te.valor > 23)) av.push('Temperatura efetiva estimada de ' + mostraNum(te.valor) + ' °C, fora da referência complementar de 20 a 23 °C.');
+    const ok = T !== null && T >= 18 && T <= 25;
+    return { titulo: p.local || 'Sem local', sub: [p.secao, p.climatizacao].filter(Boolean).join(' · '),
+      nums: [['Ar', T === null ? '-' : mostraNum(T) + ' °C'], ['UR', p.ur ? mostraNum(p.ur) + ' %' : '-'], ['Vel. do ar', p.vel !== undefined && p.vel !== '' ? mostraNum(p.vel) + ' m/s' : '-'], ['TE (estim.)', te ? mostraNum(te.valor) + ' °C' : '-']],
+      crits: [T === null ? crit('cinza', 'NR-17 (AET)', 'Sem temperatura do ar.') : crit(ok ? 'baixo' : 'medio', 'NR-17 (AET)', ok ? 'Temperatura do ar dentro de 18 a 25 °C.' : 'Temperatura do ar fora de 18 a 25 °C: ajuste de climatização ou medidas de conforto.'),
+        crit('cinza', 'LIP e LTCAT', 'Não se aplicam: avaliação de conforto (para calor ocupacional, use o IBUTG).')], avisos: av };
   });
+}
+
+function avalPontosLux(r) {
+  return ((r.valores || {}).ambientes || []).map(a => {
+    const n = String(a.leituras || '').split(/[;\s]+/).map(numV).filter(x => x !== null), req = numV(a.requerido);
+    const med = n.length ? n.reduce((s, x) => s + x, 0) / n.length : null, min = n.length ? Math.min(...n) : null, av = [];
+    if (a.ofuscamento === 'Sim') av.push('Ofuscamento, reflexo, sombra ou contraste excessivo relatado.');
+    if (med !== null && min !== null && min < 0.7 * med) av.push('Uniformidade baixa: leitura mínima abaixo de 70% da média.');
+    const c = med === null ? crit('cinza', 'NR-17 e NHO 11', 'Sem leituras.') : req === null ? crit('cinza', 'NR-17 e NHO 11', 'Média de ' + Math.round(med) + ' lux; falta o nível requerido para comparar.')
+      : med >= req ? crit('baixo', 'NR-17 e NHO 11', 'Média de ' + Math.round(med) + ' lux, atende ao requerido (' + req + ' lux).') : crit('medio', 'NR-17 e NHO 11', 'Média de ' + Math.round(med) + ' lux, abaixo do requerido (' + req + ' lux).');
+    return { titulo: a.local || 'Sem local', sub: [a.secao, a.tarefa].filter(Boolean).join(' · '),
+      nums: [['Média', med === null ? '-' : Math.round(med) + ' lux'], ['Mínimo', min === null ? '-' : min + ' lux'], ['Requerido', req === null ? '-' : req + ' lux'], ['Leituras', n.length]],
+      crits: [c, crit('cinza', 'LIP e LTCAT', 'Não se aplicam: iluminamento é critério de conforto (NR-17).')], avisos: av };
+  });
+}
+
+function avalPontosRuidoPontual(r, limite) {
+  return ((r.valores || {}).pontos || []).map(p => {
+    const tri = p.tipoLeitura === 'Leitura instantânea (triagem)' || (!String(p.laeq || '').trim() && String(p.leituras || '').trim());
+    let L = null;
+    if (tri) { const n = String(p.leituras || '').split(/[;\s]+/).map(numV).filter(x => x !== null); if (n.length) L = r1(10 * Math.log10(n.reduce((s, x) => s + Math.pow(10, x / 10), 0) / n.length)); }
+    else L = numV(p.laeq);
+    const at = p.exigeAtencao === 'Sim', av = [];
+    if (tri) av.push('Triagem com leituras instantâneas: indicativo, não substitui medidor integrador ou dosímetro.');
+    if (L !== null && L > 80) av.push('Nível acima de 80 dB(A): vale fazer dosimetria das funções do local para o PGR, LIP e LTCAT.');
+    const c = L === null ? crit('cinza', 'NR-17 (conforto acústico)', 'Sem leituras.') : !at ? crit('cinza', 'NR-17 (conforto acústico)', 'Posto sem exigência de atenção constante: referência de conforto não se aplica.')
+      : L > limite ? crit(tri ? 'medio' : 'alto', 'NR-17 (conforto acústico)', mostraNum(L) + ' dB(A)' + (tri ? ' (triagem)' : '') + ', acima da referência de ' + limite + ' dB(A).')
+      : crit('baixo', 'NR-17 (conforto acústico)', mostraNum(L) + ' dB(A)' + (tri ? ' (triagem)' : '') + ', dentro da referência de ' + limite + ' dB(A).');
+    return { titulo: p.local || 'Sem local', sub: [p.secao, p.fonte].filter(Boolean).join(' · '),
+      nums: [[tri ? 'Nível estimado' : 'LAeq', L === null ? '-' : mostraNum(L) + ' dB(A)'], ['Lmax', p.lmax ? mostraNum(p.lmax) + ' dB(A)' : '-'], ['Exige atenção', p.exigeAtencao || '-'], ['Tipo', tri ? 'Triagem' : 'LAeq']],
+      crits: [c, crit('cinza', 'LIP e LTCAT', 'Não se aplicam a medição pontual: o enquadramento de ruído exige dosimetria da jornada.')], avisos: av };
+  });
+}
+
+function avalFrio(r) {
+  const v = r.valores || {}, T = numV(v.tempMedida), lim = 15, av = [];
+  const frio = T !== null && T < lim;
+  const temEpi = v.epis && (Array.isArray(v.epis) ? v.epis.length : Object.keys(v.epis).length);
+  const epiRuim = ['Desgastados', 'Insuficientes para todos', 'Não disponíveis'].includes(v.epiCond) || !temEpi;
+  av.push('Limite de ' + lim + ' °C para ambiente artificialmente frio adotado para a zona climática de Cuiabá (art. 253 da CLT). Confira a zona da filial.');
+  if (v.aberturaInterna === 'Não') av.push('Porta sem abertura pelo lado de dentro.');
+  if (v.alarme === 'Não') av.push('Sem alarme ou botão de emergência interno.');
+  return { titulo: v.camara || 'Câmara', sub: [v.secao, v.tipo, funcoesDoReg(r)].filter(Boolean).join(' · '),
+    nums: [['Temperatura', T === null ? '-' : mostraNum(T) + ' °C'], ['Entradas/jornada', v.entradas || '-'], ['Maior permanência', v.tempoMax ? String(v.tempoMax) : '-'], ['Pausa', v.pausa || '-']],
+    crits: [T === null ? crit('cinza', 'LIP (NR-15, Anexo 9)', 'Sem temperatura medida.') : !frio ? crit('baixo', 'LIP (NR-15, Anexo 9)', 'Não é ambiente artificialmente frio (' + mostraNum(T) + ' °C).')
+        : epiRuim ? crit('alto', 'LIP (NR-15, Anexo 9)', 'Frio sem proteção adequada (EPIs ausentes, insuficientes ou desgastados): indicativo de insalubridade em grau médio (20%).')
+        : crit('medio', 'LIP (NR-15, Anexo 9)', 'Ambiente frio com EPIs em bom estado: insalubridade neutralizada se os EPIs tiverem CA para frio e uso comprovado.'),
+      !frio ? crit('baixo', 'PGR (art. 253 da CLT)', 'Sem exigência de pausa térmica.') : v.pausa === 'Sim' ? crit('baixo', 'PGR (art. 253 da CLT)', 'Pausa de recuperação existe; confira 20 min a cada 1 h 40 min.')
+        : crit('alto', 'PGR (art. 253 da CLT)', 'Sem pausa de recuperação térmica: a CLT exige 20 min a cada 1 h 40 min em ambiente frio.'),
+      crit('cinza', 'LTCAT (Decreto 3.048/99)', 'Não enquadra: o frio não consta do Anexo IV.')], avisos: av };
+}
+
+function avalUmidade(r) {
+  const v = r.valores || {}, enc = v.encharcamento === 'Sim';
+  const temEpi = v.epis && (Array.isArray(v.epis) ? v.epis.length : Object.keys(v.epis).length);
+  return { titulo: v.local || 'Sem local', sub: [r.secao, funcoesDoReg(r)].filter(Boolean).join(' · '),
+    nums: [['Encharcamento', v.encharcamento || '-'], ['Frequência', v.frequencia || '-'], ['Tempo/jornada', v.tempo ? v.tempo + ' min' : '-'], ['Drenagem', v.drenagem || '-']],
+    crits: [!enc ? crit('baixo', 'LIP (NR-15, Anexo 10)', 'Sem encharcamento ou umidade excessiva relatados.') : temEpi ? crit('medio', 'LIP (NR-15, Anexo 10)', 'Umidade excessiva com EPIs: confira se os EPIs (CA) neutralizam a exposição; sem eles, indicativo de insalubridade em grau médio (20%).')
+        : crit('alto', 'LIP (NR-15, Anexo 10)', 'Umidade excessiva sem EPIs: indicativo de insalubridade em grau médio (20%).'),
+      crit(enc ? 'medio' : 'baixo', 'PGR', enc ? 'Risco a tratar no inventário: drenagem, piso e EPIs.' : 'Sem medida específica.'),
+      crit('cinza', 'LTCAT (Decreto 3.048/99)', 'Não enquadra: a umidade não consta do Anexo IV.')], avisos: [] };
+}
+
+function avalQuimico(r) {
+  const v = r.valores || {};
+  return { titulo: v.produto || 'Produto', sub: [r.secao, funcoesDoReg(r), v.frequencia].filter(Boolean).join(' · '),
+    nums: [['Uso', Array.isArray(v.uso) ? v.uso.join(', ') : (v.uso || '-')], ['Diluição', v.diluicao || '-'], ['Tempo/jornada', v.tempo ? v.tempo + ' min' : '-'], ['FDS no local', v.fds || '-']],
+    crits: [crit('cinza', 'LIP (NR-15, Anexos 11 e 13)', 'Avaliação pelo avaliador: depende da composição (FDS) e da forma de uso. O app não conclui sozinho.'),
+      crit(v.fds === 'Não' ? 'medio' : 'cinza', 'PGR', v.fds === 'Não' ? 'FDS não disponível no local (NR-26).' : 'Conferir FDS, EPIs e controles.'),
+      crit('cinza', 'LTCAT (Decreto 3.048/99)', 'Depende de o agente constar do Anexo IV (código 1.0.x) e da exposição.')], avisos: [] };
+}
+
+const TIPOS_AMBIENTAIS = [
+  { id: 'ruido', nome: 'Ruído (dosimetria)', forms: ['RUIDO_DOSE'], av: r => [avalDosimetria(r)] },
+  { id: 'calor', nome: 'Calor (IBUTG)', forms: ['CALOR'], av: r => [avalCalor(r)] },
+  { id: 'conforto', nome: 'Conforto térmico', forms: ['CONFORTO_TERMICO'], av: avalPontosConforto },
+  { id: 'acustico', nome: 'Ruído pontual (conforto)', forms: ['RUIDO_PONTO'], av: r => avalPontosRuidoPontual(r, 65) },
+  { id: 'lux', nome: 'Iluminamento', forms: ['ILUMINACAO'], av: avalPontosLux },
+  { id: 'frio', nome: 'Frio', forms: ['FRIO'], av: r => [avalFrio(r)] },
+  { id: 'umidade', nome: 'Umidade', forms: ['UMIDADE'], av: r => [avalUmidade(r)] },
+  { id: 'quimicos', nome: 'Químicos', forms: ['QUIMICOS'], av: r => [avalQuimico(r)] }
+];
+const ORDEM_NIVEL = { alto: 0, medio: 1, baixo: 2, cinza: 3 };
+
+async function telaCalor(app) { S.ambAba = 'calor'; location.replace('#/ambiental'); }
+
+async function telaAmbiental(app) {
+  definirTopo('Avaliações ambientais: prévia', true);
+  const fil = S.ctx.filial;
+  const regs = registrosVisiveis().filter(r => r.filial === fil);
+  const dados = TIPOS_AMBIENTAIS.map(t => {
+    const itens = [];
+    regs.filter(r => t.forms.includes(r.form)).forEach(r => { let L = []; try { L = t.av(r) || []; } catch (e) { L = [{ titulo: 'Erro ao calcular', incompleto: e.message, nums: [], crits: [], avisos: [] }]; } L.forEach(x => itens.push(Object.assign(x, { reg: r }))); });
+    itens.forEach(x => { x.pior = x.incompleto ? 'cinza' : (x.crits || []).reduce((m, c) => ORDEM_NIVEL[c.nivel] < ORDEM_NIVEL[m] ? c.nivel : m, 'cinza'); });
+    itens.sort((a, b) => ORDEM_NIVEL[a.pior] - ORDEM_NIVEL[b.pior] || String(a.titulo).localeCompare(String(b.titulo)));
+    return Object.assign({}, t, { itens });
+  });
+  if (!S.ambAba || !dados.some(d => d.id === S.ambAba)) S.ambAba = (dados.find(d => d.itens.length) || dados[0]).id;
+  app.appendChild(h('div', { class: 'cartao fino' }, h('p', { class: 'peq', text: 'Prévia calculada no aparelho com os registros da filial ' + (fil || '') + '. Cada avaliação aparece enquadrada como LIP (insalubridade, NR-15), PGR (NR-09 e NHO) e LTCAT (Decreto 3.048/99). Serve para orientar; a conclusão do laudo continua sendo sua. Visível só para o administrador.' })));
+  const abas = h('div', { class: 'chips amb-abas' });
+  dados.forEach(d => {
+    const alto = d.itens.filter(x => x.pior === 'alto').length;
+    abas.appendChild(h('button', { type: 'button', class: 'chip' + (S.ambAba === d.id ? ' on' : '') + (alto ? ' tem-alto' : ''), text: d.nome + ' (' + d.itens.length + ')', onclick: () => { S.ambAba = d.id; rotear(); } }));
+  });
+  app.appendChild(abas);
+  const D = dados.find(d => d.id === S.ambAba);
+  if (!D.itens.length) { app.appendChild(h('p', { class: 'vazio', text: 'Nenhuma avaliação de ' + D.nome.toLowerCase() + ' nesta filial neste aparelho. Se a equipe já registrou, sincronize em Registros.' })); return; }
+  const cont = { alto: 0, medio: 0, baixo: 0, cinza: 0 }; D.itens.forEach(x => cont[x.pior]++);
   app.appendChild(h('div', { class: 'cartao fino calor-resumo' },
-    h('span', { class: 'selo alto', text: cont.alto + ' acima do limite' }), h('span', { class: 'selo medio', text: cont.medio + ' acima do nível de ação' }),
-    h('span', { class: 'selo baixo', text: cont.baixo + ' abaixo do nível de ação' }), cont.inc ? h('span', { class: 'selo cinza', text: cont.inc + ' incompleta(s)' }) : null));
-  app.appendChild(lista);
-  app.appendChild(h('p', { class: 'peq', text: '* IBUTG lido no aparelho (sem tbn e tg para calcular). Limites para trabalhador aclimatizado; IBUTG e M ponderados pelo tempo no período de 60 min.' }));
+    h('span', { class: 'selo alto', text: cont.alto + ' acima do limite ou com enquadramento' }), h('span', { class: 'selo medio', text: cont.medio + ' em atenção' }),
+    h('span', { class: 'selo baixo', text: cont.baixo + ' dentro' }), cont.cinza ? h('span', { class: 'selo cinza', text: cont.cinza + ' sem conclusão' }) : null));
+  D.itens.forEach(x => {
+    const r = x.reg;
+    const card = h('div', { class: 'cartao calor-card' },
+      h('div', { class: 'calor-cab' }, h('div', null, h('strong', { text: x.titulo }), h('div', { class: 'peq', text: (x.sub || '') + (r.status !== 'concluido' ? ' · rascunho' : '') })),
+        h('span', { class: 'selo ' + x.pior, text: x.incompleto ? 'Incompleta' : x.pior === 'alto' ? 'Acima / enquadra' : x.pior === 'medio' ? 'Atenção' : x.pior === 'baixo' ? 'Dentro' : 'Sem conclusão' })));
+    if (x.incompleto) card.appendChild(h('p', { class: 'peq', text: x.incompleto }));
+    if (x.nums && x.nums.length) card.appendChild(h('div', { class: 'calor-num' }, x.nums.map(([k, val]) => h('div', null, h('small', { text: k }), h('b', { text: String(val) })))));
+    (x.crits || []).forEach(c => card.appendChild(h('div', { class: 'crit-linha' }, h('span', { class: 'selo ' + c.nivel, text: c.rotulo }), h('span', { class: 'peq', text: c.texto }))));
+    if (x.tabela && x.tabela.length) card.appendChild(h('table', { class: 'tab-calor' },
+      h('tr', null, ['Situação', 'IBUTG', 'Tempo', 'M'].map(t => h('th', { text: t }))),
+      x.tabela.map(s => h('tr', null, h('td', { text: s.desc + (s.atividade ? ' (' + s.atividade + ')' : '') }), h('td', { text: s.ib === null ? '-' : mostraNum(s.ib) + (s.origem === 'lido no aparelho' ? '*' : '') }),
+        h('td', { text: s.t ? s.t + ' min' : '-' }), h('td', { text: s.M === null ? '-' : s.M + ' W' })))));
+    (x.avisos || []).forEach(a => card.appendChild(h('div', { class: 'aviso-calor', text: '⚠ ' + a })));
+    card.appendChild(h('a', { class: 'bt sec mini', href: '#/r/' + r.id, text: 'Abrir registro' }));
+    app.appendChild(card);
+  });
 }
 
 async function telaPainel(app) {
@@ -1864,10 +2029,11 @@ async function telaPainel(app) {
     const info = filialInfo(fil);
     if (!P) { area.appendChild(h('div', { class: 'cartao' }, h('p', { class: 'peq', text: navigator.onLine ? 'Carregando o plano da filial...' : 'Sem internet. Conecte uma vez para guardar o plano neste aparelho.' }), h('div', { class: 'girando' }))); return; }
     const C = calcPlano(P, fil), g = C.geral;
-    const nCalor = registrosVisiveis().filter(r => r.form === 'CALOR' && r.filial === fil).length;
-    area.appendChild(h('a', { class: 'cartao fino link-calor', href: '#/calor' },
-      h('strong', { text: '🌡 Calor (IBUTG): prévia dos limites' }),
-      h('span', { class: 'peq', text: nCalor ? nCalor + ' avaliação(ões) de calor nesta filial · NR-15 Anexo 3 e NR-09 Anexo III' : 'Nenhuma avaliação de calor nesta filial ainda' })));
+    const formsAmb = TIPOS_AMBIENTAIS.flatMap(t => t.forms);
+    const nAmb = registrosVisiveis().filter(r => formsAmb.includes(r.form) && r.filial === fil).length;
+    area.appendChild(h('a', { class: 'cartao fino link-calor', href: '#/ambiental' },
+      h('strong', { text: '🌡 Avaliações ambientais: prévia dos limites' }),
+      h('span', { class: 'peq', text: nAmb ? nAmb + ' avaliação(ões) nesta filial · ruído, calor, conforto, iluminamento, frio, umidade e químicos, por LIP, PGR e LTCAT' : 'Nenhuma avaliação ambiental nesta filial ainda' })));
 
     // 1. Visão geral (macro)
     area.appendChild(h('div', { class: 'hero' },
