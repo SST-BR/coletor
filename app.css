@@ -545,3 +545,21 @@ button.pm-mini:active { transform: scale(.95); }
 .fun-outras { max-height: 55vh; overflow: auto; margin: 10px 0; }
 .fun-outras .sec-grupo { padding: 10px 0; border-bottom: 1px solid var(--linha, #e5e7eb); }
 .fun-outras .sec-cab { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+
+/* prévia de calor */
+.link-calor { display: flex; flex-direction: column; gap: 2px; text-decoration: none; color: inherit; margin-bottom: 12px; }
+.calor-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 8px; }
+.selo { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: .78em; font-weight: 700; white-space: nowrap; margin: 2px 4px 2px 0; }
+.selo.alto { background: #fde2e2; color: #9b1c1c; } .selo.medio { background: #fef3c7; color: #92400e; }
+.selo.baixo { background: #dcfce7; color: #166534; } .selo.cinza { background: #e5e7eb; color: #374151; }
+.calor-num { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0; }
+.calor-num div { background: var(--fundo2, #f5f6fb); border-radius: 10px; padding: 6px 8px; }
+.calor-num small { display: block; font-size: .72em; color: var(--sub, #64748b); } .calor-num b { font-size: 1.05em; }
+.tab-calor { width: 100%; border-collapse: collapse; font-size: .82em; margin: 6px 0; }
+.tab-calor th, .tab-calor td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--linha, #e5e7eb); }
+.aviso-calor { font-size: .8em; background: #fff7ed; border-radius: 8px; padding: 6px 8px; margin: 4px 0; }
+@media (max-width: 520px) { .calor-num { grid-template-columns: repeat(2, 1fr); } }
+.amb-abas { margin: 4px 0 12px; } .amb-abas .chip.tem-alto { box-shadow: inset 0 0 0 2px #f87171; }
+.crit-linha { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0; }
+.crit-linha .selo { flex: 0 0 auto; min-width: 150px; text-align: center; white-space: normal; }
+@media (max-width: 520px) { .crit-linha { flex-direction: column; gap: 2px; } .crit-linha .selo { min-width: 0; } }
