@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.7';
+const VERSAO_APP = '1.9.8';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -1998,7 +1998,9 @@ async function telaRegistro(app, id) {
         e.target.value = v;
       }
       reg.secao = v; reg.funcao = ''; reg.ghe = gheDe(reg.filial, v); inpGhe.value = reg.ghe;
-      encherFuncoes(); mostrarInfo(); alterou();
+      encherFuncoes(); mostrarInfo();
+      S.editor.dependentes.filter(d => d.campo === '__secaoRegistro').forEach(d => d.mudouSecao());
+      alterou();
     } }, h('option', { value: '', text: 'Escolha a seção' }), secoesDe(reg.filial).map(x => h('option', { value: x, text: x })),
       (reg.secao && !secoesDe(reg.filial).includes(reg.secao)) ? h('option', { value: reg.secao, text: reg.secao }) : null,
       h('option', { value: '__outra', text: 'Outra (digitar)...' }));
@@ -2354,7 +2356,13 @@ const CONTROLES = {
       const ops = funcoesDe(reg.filial, sec);
       (esc[c.id] || []).forEach(x => { if (!ops.includes(x)) ops.push(x); });
       if (!funcoesDe(reg.filial, sec).length) box.appendChild(h('div', { class: 'peq', text: 'Esta seção não tem funções no quadro de lotação (ex.: antecâmara, área comum). Use "Funções de outras seções" para escolher quem acessa.' }));
-      box.appendChild(chips(ops, esc[c.id] || [], true, v => { esc[c.id] = v; alterou(); }));
+      box.appendChild(chips(ops, esc[c.id] || [], true, v => { esc[c.id] = v; alterou(); desenhar(); }));
+      const daSec = funcoesDe(reg.filial, sec), todas = daSec.length && daSec.every(x => (esc[c.id] || []).includes(x));
+      if (daSec.length > 1) box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: todas ? 'Desmarcar todas da seção' : 'Marcar todas da seção', onclick: () => {
+        const atual = esc[c.id] || [];
+        esc[c.id] = todas ? atual.filter(x => !daSec.includes(x)) : atual.concat(daSec.filter(x => !atual.includes(x)));
+        alterou(); desenhar();
+      } }));
       box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: '+ Funções de outras seções', onclick: () => escolherFuncoesOutrasSecoes(reg.filial, sec, esc[c.id] || [], v => { esc[c.id] = v; alterou(); desenhar(); }) }));
       box.appendChild(h('button', { type: 'button', class: 'bt sec mini', text: '+ Outra função', onclick: async () => {
         const v = await perguntar('Nome da função:');
@@ -2365,7 +2373,8 @@ const CONTROLES = {
         esc[c.id] = (esc[c.id] || []).concat(v.toUpperCase()); alterou(); desenhar();
       } }));
     };
-    S.editor.dependentes.push({ escopo: esc, campo: c.deSecao, mudouSecao: () => { esc[c.id] = []; desenhar(); } });
+    // trocou a seção: limpa as funções da seção anterior (as de outras seções continuam)
+    S.editor.dependentes.push({ escopo: esc, campo: c.deSecao || '__secaoRegistro', mudouSecao: () => { esc[c.id] = (esc[c.id] || []).filter(x => funcaoQualificada(x).s); desenhar(); } });
     desenhar();
     return box;
   },
