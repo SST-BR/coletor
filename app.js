@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.17';
+const VERSAO_APP = '1.9.19';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -2102,6 +2102,40 @@ function cartaoInauguracao(fil) {
       fi.inauguracao ? h('button', { class: 'bt', text: 'Corrigir fase dos registros', onclick: corrigir }) : null));
 }
 
+/** Cartão "Pronto para gerar o PGR?": obrigatórios (impedem a geração) e recomendados, por grupo e por GHE. */
+function cartaoProntidaoPGR(G, D, verificar, fil) {
+  if (!G) return h('div', { class: 'cartao pronto nao' },
+    h('div', { class: 'pronto-cab' }, h('div', null, h('h3', { text: 'Pronto para gerar o PGR?' }),
+      h('small', { text: 'Toque em "Verificar" para calcular o que falta para o PGR desta filial.' }))),
+    h('button', { class: 'bt sec larga', text: 'Verificar agora', onclick: verificar }));
+  const t = G.totais || {}, faltam = t.obrigPend || 0;
+  const grupos = [];
+  (G.itens || []).forEach(i => { let g = grupos.find(x => x.nome === i.g); if (!g) grupos.push(g = { nome: i.g, itens: [] }); g.itens.push(i); });
+  function abrir(i) {
+    if (i.form && !i.ok && perm('coletar')) { novoRegistro(i.form, { secao: i.secao }); return; }
+    location.hash = '#/docs';
+  }
+  return h('div', { class: 'cartao pronto ' + (faltam ? 'nao' : 'sim') },
+    h('div', { class: 'pronto-cab' },
+      h('div', null, h('h3', { text: 'Pronto para gerar o PGR?' }),
+        h('small', { text: (t.obrig - faltam) + ' de ' + t.obrig + ' obrigatórios atendidos' + (t.recom ? ' · recomendadas ' + (t.recom - t.recomPend) + ' de ' + t.recom : '') + (D && D.em ? ' · servidor em ' + dataHoraBr(D.em) : '') })),
+      h('span', { class: 'selo ' + (faltam ? 'nao' : 'sim'), text: faltam ? 'Faltam ' + faltam : 'Pronto' })),
+    grupos.map(g => {
+      const pend = g.itens.filter(i => !i.ok).length, soRec = g.itens.every(i => !i.obrig);
+      const lista = h('div', { class: 'checklist' }, g.itens.map(i => h('a', { class: 'ck ' + (i.ok ? 'ok' : i.obrig ? 'falta' : 'rec'), href: 'javascript:void 0', onclick: () => abrir(i) },
+        h('span', { class: 'ck-ic', text: i.ok ? '✓' : i.obrig ? '!' : '•' }),
+        h('div', null, h('strong', { text: (i.secao ? 'GHE - ' + i.secao + ': ' : '') + i.t }),
+          h('small', { text: (i.obrig ? '' : 'Recomendado · ') + i.d })),
+        h('span', { class: 'ck-seta', text: '›' }))));
+      // recomendados ficam recolhidos: são muitos (uma câmara por GHE) e não impedem a geração
+      if (soRec) return h('details', { class: 'pgr-grupo' }, h('summary', { class: 'pgr-gcab' }, h('strong', { text: g.nome }),
+        h('small', { text: (g.itens.length - pend) + ' de ' + g.itens.length + ' feitas · toque para ver' })), lista);
+      return h('div', { class: 'pgr-grupo' }, h('div', { class: 'pgr-gcab' }, h('strong', { text: g.nome }), h('small', { text: pend ? pend + ' pendente(s)' : 'ok' })), lista);
+    }),
+    h('p', { class: 'peq', text: 'Obrigatórios impedem a geração. Recomendados melhoram o PGR, mas sem eles o documento mantém o texto do PGR base. Toque em uma avaliação pendente para abri-la já com a seção.' }),
+    h('button', { class: 'bt sec larga', text: 'Verificar de novo', onclick: verificar }));
+}
+
 async function telaPainel(app) {
   definirTopo('Painel de andamento', false);
   const fil = S.ctx.filial;
@@ -2161,6 +2195,9 @@ async function telaPainel(app) {
       h('div', { class: 'checklist' }, itens.map(i => h('a', { class: 'ck ' + (i.ok ? 'ok' : 'falta'), href: i.ir },
         h('span', { class: 'ck-ic', text: i.ok ? '✓' : '!' }), h('div', null, h('strong', { text: i.t }), h('small', { text: i.d })), h('span', { class: 'ck-seta', text: '›' })))),
       h('button', { class: 'bt sec larga', text: D ? 'Verificar de novo' : 'Verificar agora', onclick: verificar })));
+
+    // 2b. Pronto para gerar o PGR? (itens obrigatórios e recomendados vindos do servidor)
+    area.appendChild(cartaoProntidaoPGR(D && D.pgr, D, verificar, fil));
 
     // 3. Por bloco de tema
     area.appendChild(h('h3', { class: 'titulo-sec', text: 'Por bloco de tema' }));
@@ -2818,7 +2855,9 @@ const CONTROLES = {
       let r = null;
       try { r = fn ? fn(esc) : null; } catch (e) { }
       if (!r || !r.linhas) { box.appendChild(h('div', { class: 'peq', text: 'Preencha as medições para ver o resultado.' })); return; }
-      r.linhas.forEach(l => box.appendChild(barraReferencia(l)));
+      r.linhas.forEach(l => box.appendChild(l.texto !== undefined
+        ? h('div', { class: 'barra-res' }, h('div', { class: 'barra-cab' }, h('span', { text: l.rotulo }), h('strong', { class: l.nivel || '', text: l.texto })))
+        : barraReferencia(l)));
       if (r.nota) box.appendChild(h('div', { class: 'peq', text: r.nota }));
     };
     S.editor.calculados.push({ el: box, render });

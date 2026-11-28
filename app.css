@@ -569,3 +569,11 @@ button.pm-mini:active { transform: scale(.95); }
 /* seletor de arquivo escondido só visualmente, dentro do rótulo que serve de botão */
 .arq-oculto { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; clip: rect(0 0 0 0); pointer-events: none; }
 label.bt { cursor: pointer; position: relative; user-select: none; -webkit-user-select: none; }
+
+/* prontidão do PGR */
+.pgr-grupo { margin-top: 10px; }
+.pgr-gcab { display: flex; justify-content: space-between; align-items: baseline; margin: 6px 2px 4px; }
+.pgr-gcab small { color: var(--sub, #667); }
+.ck.rec .ck-ic { background: #e6e9f2; color: #5a6275; }
+details.pgr-grupo > summary { cursor: pointer; list-style: none; }
+details.pgr-grupo > summary::-webkit-details-marker { display: none; }
