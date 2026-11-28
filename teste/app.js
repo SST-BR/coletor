@@ -6,7 +6,7 @@
  */
 'use strict';
 
-const VERSAO_APP = '1.9.18';
+const VERSAO_APP = '1.9.19';
 // Ambiente: o app publicado em /coletor/teste/ é o de TESTE, com banco local próprio e só fala com o servidor de teste.
 const AMBIENTE = /\/teste\//.test(location.pathname) ? 'TESTE' : 'PRODUCAO';
 const LIMITE_ENVIO = 34 * 1024 * 1024; // acima disso o arquivo fica para envio manual
@@ -2855,7 +2855,9 @@ const CONTROLES = {
       let r = null;
       try { r = fn ? fn(esc) : null; } catch (e) { }
       if (!r || !r.linhas) { box.appendChild(h('div', { class: 'peq', text: 'Preencha as medições para ver o resultado.' })); return; }
-      r.linhas.forEach(l => box.appendChild(barraReferencia(l)));
+      r.linhas.forEach(l => box.appendChild(l.texto !== undefined
+        ? h('div', { class: 'barra-res' }, h('div', { class: 'barra-cab' }, h('span', { text: l.rotulo }), h('strong', { class: l.nivel || '', text: l.texto })))
+        : barraReferencia(l)));
       if (r.nota) box.appendChild(h('div', { class: 'peq', text: r.nota }));
     };
     S.editor.calculados.push({ el: box, render });
