@@ -1,7 +1,7 @@
 /* Service worker: guarda a "casca" do aplicativo para abrir sem internet. Não guarda dados. */
 // O app de teste (/coletor/teste/) usa o prefixo coletor-teste-v; cada um apaga só os seus caches antigos.
 const PREFIXO = /\/teste\//.test(self.location.pathname) ? 'coletor-teste-v' : 'coletor-v';
-const VERSAO = PREFIXO + '1.9.19';
+const VERSAO = PREFIXO + '1.9.21';
 const ARQUIVOS = ['./', './index.html', './app.css', './app.js', './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-512-maskable.png'];
 
